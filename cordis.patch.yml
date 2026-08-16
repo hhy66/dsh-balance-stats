@@ -1,0 +1,32 @@
+# dsh-balance-stats 组合包层：一个插件行。
+# 安装: dsh plugin --profile web add <本目录>   (会自动应用本 patch 层)
+#
+# 覆盖配置示例（写进 $DSH_HOME/profiles/web/cordis.patch.yml）:
+#   - id: dsh-balance-stats
+#     config:
+#       refreshIntervalMs: 600000    # 服务端查询余额的间隔(毫秒)
+#       warningThreshold: 20         # 余额低于此值显示黄色
+#       dangerThreshold: 5           # 余额低于此值显示红色
+#       currency: CNY
+#       prices:                      # 非 V4 模型的静态单价(每百万 token)
+#         deepseek-chat: { cacheHit: 0.5, cacheMiss: 2, output: 8 }
+- insert:
+    - id: dsh-balance-stats
+      name: dsh-balance-stats
+      config:
+        apiKeyRef: DEEPSEEK_API_KEY
+        baseUrl: https://api.deepseek.com
+        refreshIntervalMs: 300000
+        timeoutMs: 8000
+        currency: CNY
+        warningThreshold: 10
+        dangerThreshold: 5
+        # 单日预算上限(元): 今日花费超过即红色警示, 0 表示关闭预算制动
+        dailyBudget: 0
+        # 官方定价与扣费规则文案(留空则用插件内置的官方原文, 可自行覆盖)
+        pricingNote: ''
+        billingRule: ''
+        prices:
+          deepseek-v4-flash: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 }
+          deepseek-v4-pro: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 }
+        defaultPrices: { cacheHit: 0.1, cacheMiss: 1, output: 2 }
