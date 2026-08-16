@@ -1,6 +1,9 @@
 # 依赖(安装时按需获取; zod 需拷入插件目录, 见 README「安装后如果提示缺少 zod」)
 node_modules/
 
+# 本机维护红线文档: 只留本机, 绝不进 GitHub
+REDLINE.md
+
 # 测试临时产物
 *.tgz
 test/*.log

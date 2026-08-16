@@ -84,28 +84,121 @@ deepseek-v4-pro
 
 ---
 
-## 🚀 安装
+## 🚀 安装（手把手，零基础也能装）
 
-**一条命令**（需要已装好 DSH 且 `dsh web` 能正常运行）：
+整个过程约 5 分钟，一共五步。以 Windows 为例，macOS/Linux 把路径写法换一下即可。
 
-```sh
-dsh plugin --profile web add <本插件目录>
+### 第一步：确认你已经有 DSH
+
+打开终端（PowerShell），运行：
+
+```powershell
+dsh web
 ```
 
-然后重启 `dsh web`，浏览器硬刷新（`Ctrl+Shift+R`）。
+能看到浏览器打开 DeepSeek Harness 的网页界面（默认 http://127.0.0.1:3080），说明环境就绪。
 
-安装后到 **设置 → 余额与消耗** 即可看到面板；左侧边栏底部会同时出现 KPI 行。
+- 如果提示 `dsh` 不是命令：先安装 DSH 本体
+  ```powershell
+  npm install -g @deepseek-ai/dsh
+  dsh web
+  ```
+- 另外确认 pnpm 存在（安装插件会用到）：
+  ```powershell
+  pnpm --version    # 没有输出版本号就运行: npm install -g pnpm
+  ```
 
-### 安装后如果提示缺少 zod
+> 先把这个终端窗口里的 `dsh web` 停掉（按 `Ctrl+C`），等装完插件再重新启动。
 
-个别安装方式下依赖 `zod` 不会被自动装进插件目录，现象是面板打不开。解决：把 DSH 自带的 zod 拷进插件目录即可：
+### 第二步：拿到插件代码（二选一）
 
-```sh
-# Windows 示例（PowerShell）
-Copy-Item -Recurse "$env:APPDATA\npm\node_modules\@deepseek-ai\dsh\node_modules\zod" "<插件目录>\node_modules\zod"
+**方式 A：会 git 的人**
+
+```powershell
+git clone https://github.com/hhy66/dsh-balance-stats.git
 ```
 
-（DSH 的全局安装路径可用 `npm root -g` 查看。）
+**方式 B：不会 git 的人（推荐）**
+
+1. 浏览器打开本仓库页面
+2. 点绿色 **Code** 按钮 → **Download ZIP**
+3. 把下载的压缩包解压到任意一个你找得到的地方，例如 `C:\dsh-plugins\dsh-balance-stats`
+
+> 国内网络如果 clone 失败，先给 git 配代理（把端口换成你自己的代理端口）：
+> ```powershell
+> git config --global http.https://github.com.proxy http://127.0.0.1:7897
+> ```
+
+### 第三步：安装插件
+
+在终端里运行下面这条命令（**把路径换成你实际的插件目录**）：
+
+```powershell
+dsh plugin --profile web add "C:\dsh-plugins\dsh-balance-stats"
+```
+
+看到类似 `+ dsh-balance-stats link:...` 的输出就是安装成功了。这条命令做了两件事：把插件登记到你的 DSH 配置里，并自动装好它需要的依赖。
+
+### 第四步：重启并刷新
+
+1. 终端里重新运行 `dsh web`
+2. 浏览器里按 **`Ctrl+Shift+R`** 强制刷新页面
+
+### 第五步：验证是否装好
+
+- 左侧边栏底部（"设置"一行的上方）出现一行余额数字 ✅
+- 打开 **设置 → 余额与消耗**，能看到完整面板 ✅
+- 如果余额位置显示"未配置 DEEPSEEK_API_KEY"：你的密钥还没放进 DSH。把密钥加到 `C:\Users\你的用户名\.dsh\.credentials.yaml` 里（`DEEPSEEK_API_KEY: sk-...`），保存后重启 `dsh web` 即可
+
+---
+
+### 🆘 安装常见问题
+
+**Q：面板打不开 / 提示找不到 zod？**
+
+个别安装方式下依赖 zod 不会被自动装进插件目录。把 DSH 自带的 zod 拷一份过去即可：
+
+```powershell
+# 先看 DSH 装在哪个全局目录
+npm root -g
+# 例如输出 C:\Program Files\nodejs\node_modules，那么执行：
+Copy-Item -Recurse "C:\Program Files\nodejs\node_modules\@deepseek-ai\dsh\node_modules\zod" "你的插件目录\node_modules\zod"
+```
+
+拷贝后重启 `dsh web` + 硬刷新。
+
+**Q：`dsh plugin` 提示找不到 pnpm？**
+
+```powershell
+npm install -g pnpm
+```
+
+**Q：安装依赖时网络很慢 / 失败？**
+
+换国内 npm 镜像再试：
+
+```powershell
+npm config set registry https://registry.npmmirror.com
+dsh plugin --profile web add "你的插件目录"
+```
+
+**Q：面板是空白的？**
+
+先 `Ctrl+Shift+R` 硬刷新；还不行就重启 `dsh web`；仍不行按 `F12` 打开控制台，把红色报错发到 GitHub Issues。
+
+### 🔄 以后怎么更新插件
+
+**普通用户**：重新下载最新代码（git pull 或重新 Download ZIP 覆盖旧目录），然后重跑第三步和第四步即可。
+
+**插件作者本人**：本机有一份不公开的《维护红线》文档（在插件目录的 `REDLINE.md`，已排除出版本库），按它执行。
+
+### 🗑️ 卸载
+
+```powershell
+dsh plugin --profile web remove dsh-balance-stats
+```
+
+重启 `dsh web` 生效。
 
 ---
 
