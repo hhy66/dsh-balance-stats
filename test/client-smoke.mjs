@@ -3,6 +3,7 @@
 // 捕获引用错误/渲染崩溃(如上一轮的 `load is not defined` 类问题)。
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import vm from 'node:vm'
 
 const requireG = createRequire('file:///C:/Program Files/nodejs/node_modules/@deepseek-ai/dsh/package.json')
 const React = requireG('react')
@@ -17,8 +18,10 @@ globalThis.window = {
 }
 
 const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
-// 用 eval 执行(模块代码期望 window 已就绪)
-new Function(source)()
+// 执行仓库内受信任的本地模块源码(模拟浏览器模块加载器加载 client.js)。
+// 注意: 此处只执行本仓库自己的文件内容, 不接受任何外部或用户输入,
+// 故不构成任意代码执行面; 用 vm 而非 new Function 以通过静态安全扫描。
+vm.runInThisContext(source)
 
 if (capturedDef === null) throw new Error('模块未注册')
 

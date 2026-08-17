@@ -693,7 +693,8 @@ export function apply(ctx, config) {
           res.end()
           return
         }
-        const parsedUrl = new URL(req.url ?? '/', 'http://127.0.0.1')
+        // 仅作 URL 解析基准(提取查询参数用), 不发起任何网络请求
+        const parsedUrl = new URL(req.url ?? '/', 'http://localhost')
         const force = parsedUrl.searchParams.get('force') === '1' || parsedUrl.searchParams.get('force') === 'true' || req.method === 'POST'
         if (force) {
           // 冷却防刷保护: 距离上次主动拉取至少间隔 2000ms
