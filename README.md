@@ -1,5 +1,7 @@
 # DSH 余额与消耗面板（dsh-balance-stats）
 
+[![dsh.so security](https://www.dsh.so/badges/dsh-balance-stats.svg)](https://www.dsh.so/artifact/dsh-balance-stats/)
+
 一个给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）用的插件：在左侧边栏和设置页里，实时显示 DeepSeek 账户余额与本机所有会话的 token 消耗，并且**把每一分钱是怎么算出来的摊开给你看**。
 
 用一句话说：**官方账单收了多少、你花在哪了、还能用多久，一个面板讲清楚。**
