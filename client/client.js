@@ -142,6 +142,35 @@ window.__ModuleLoader__.load({
 			return { cost, tokens };
 		};
 
+		/** 峰谷错峰估算: 高峰花费占比与"全部错峰到空闲"可省金额(高峰价=空闲价×2)。 */
+		const peakSavingOf = (breakdown) => {
+			let peakCost = 0, offpeakCost = 0;
+			for (const g of breakdown ?? []) {
+				for (const t of g.tiers ?? []) {
+					if (t.tier === "peak") peakCost += t.cost ?? 0;
+					else if (t.tier === "offpeak") offpeakCost += t.cost ?? 0;
+				}
+			}
+			const total = peakCost + offpeakCost;
+			return { peakCost, offpeakCost, total, peakRatio: total > 0 ? peakCost / total : 0, save: peakCost / 2 };
+		};
+
+		/** 工作区成本排行: 按工作区聚合会话花费, 降序。 */
+		const workspaceRanking = (sessions) => {
+			const m = new Map();
+			for (const s of sessions ?? []) {
+				const ws = s.workspace || "未知工作区";
+				m.set(ws, (m.get(ws) ?? 0) + (s.cost ?? 0));
+			}
+			return [...m.entries()].map(([ws, cost]) => ({ ws, cost })).sort((a, b) => b.cost - a.cost);
+		};
+
+		/** 对账偏差: local=插件估算, official=官方账单金额; 返回差额与相对偏差(官方为 0 时返回 null)。 */
+		const reconcileDeviation = (local, official) => {
+			if (!Number.isFinite(official) || official <= 0) return null;
+			return { diff: local - official, ratio: (local - official) / official };
+		};
+
 		/** 余额状态: { cls, text } */
 		const balanceStatus = (balance) => {
 			if (!balance || !balance.ok || !Array.isArray(balance.balances) || balance.balances.length === 0) {
@@ -251,13 +280,32 @@ window.__ModuleLoader__.load({
 		};
 
 		/** 右上角悬浮 KPI 胶囊(官方 shell.overlay 槽位, 全窗口叠加层, 不占布局)。
-		 *  默认只显示余额(最小占地, 不挡右侧按钮), 点击展开 续航/今日/本月, 再点收起。 */
+		 *  默认只显示余额(最小占地, 不挡右侧按钮), 点击展开 续航/今日/本月/本会话, 再点收起。 */
 		function KpiCorner() {
 			const data = useKpi();
 			const kpi = kpiOf(data);
 			const dotCls = balanceStatus(kpi.balance).cls;
 			const left = kpi.daysLeft === null ? "—" : (kpi.daysLeft >= 365 ? ">1年" : "≈" + (kpi.daysLeft < 1 ? kpi.daysLeft.toFixed(1) : String(Math.round(kpi.daysLeft))) + "天");
 			const [expanded, setExpanded] = react.useState(false);
+			const [, setFeedTick] = react.useState(0);
+			// 当前会话实时花费(来自会话列表推送帧, 无选中会话时为 null)
+			let currentCost = null;
+			try {
+				const snap = kpiStore.sessionsFeed?.getListSnapshot?.();
+				const cur = snap?.current;
+				if (cur) {
+					const entry = (snap?.items ?? []).find((it) => it.sessionId === cur);
+					const c = entry?.projectionValues?.balanceConsumption?.cost;
+					if (typeof c === "number" && c > 0) currentCost = c;
+				}
+			} catch { /* 读取失败忽略 */ }
+			react.useEffect(() => {
+				let off = null;
+				try {
+					off = kpiStore.sessionsFeed?.subscribe?.(() => setFeedTick((t) => t + 1));
+				} catch { /* 无订阅能力 */ }
+				return () => { if (off) { try { off() } catch { /* 已释放 */ } } };
+			}, []);
 			const children = [
 				react.createElement("span", { key: "dot", className: "dbs_dot " + dotCls }),
 				react.createElement("span", { key: "balance", className: "dbs_corner_val" }, kpi.money(kpi.totalBalance))
@@ -271,12 +319,15 @@ window.__ModuleLoader__.load({
 					react.createElement("span", { key: "today", className: "dbs_corner_val" }, kpi.money(kpi.todayCost)),
 					react.createElement("span", { key: "s3", className: "dbs_corner_sep" }, "·"),
 					react.createElement("span", { key: "ml", className: "dbs_corner_lab" }, "月"),
-					react.createElement("span", { key: "month", className: "dbs_corner_val" }, kpi.money(kpi.monthCost))
+					react.createElement("span", { key: "month", className: "dbs_corner_val" }, kpi.money(kpi.monthCost)),
+					react.createElement("span", { key: "s4", className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", { key: "cl", className: "dbs_corner_lab" }, "本会话"),
+					react.createElement("span", { key: "cur", className: "dbs_corner_val" }, currentCost === null ? "—" : kpi.money(currentCost))
 				);
 			}
 			return react.createElement("div", {
 				className: "dbs_corner" + (expanded ? "" : " dbs_corner_compact"),
-				title: "DeepSeek 余额与消耗 · 余额每 3 秒刷新 · 统计每 30 秒刷新\n余额 " + kpi.money(kpi.totalBalance) + " · 续航 " + left + " · 今日 " + kpi.money(kpi.todayCost) + " · 本月 " + kpi.money(kpi.monthCost) + "\n点击展开/收起 · 完整面板见 设置 → 余额与消耗",
+				title: "DeepSeek 余额与消耗 · 余额每 3 秒刷新 · 统计每 30 秒刷新\n余额 " + kpi.money(kpi.totalBalance) + " · 续航 " + left + " · 今日 " + kpi.money(kpi.todayCost) + " · 本月 " + kpi.money(kpi.monthCost) + (currentCost !== null ? " · 本会话 " + kpi.money(currentCost) : "") + "\n点击展开/收起 · 完整面板见 设置 → 余额与消耗",
 				role: "button",
 				onClick: () => setExpanded((e) => !e)
 			}, children);
@@ -292,6 +343,8 @@ window.__ModuleLoader__.load({
 			const [timeFilter, setTimeFilter] = react.useState("all");
 			const [search, setSearch] = react.useState("");
 			const [collapsed, setCollapsed] = react.useState({});
+			const [pricingCheck, setPricingCheck] = react.useState(null);
+			const [officialInput, setOfficialInput] = react.useState("");
 
 			// ── 会话热重载: 订阅 Web 界面的会话列表推送流 ──
 			// 改名/新标题(标题投影帧)、会话增删都会触发; 标题立即从推送条目中读取,
@@ -443,6 +496,9 @@ window.__ModuleLoader__.load({
 				.filter((x) => x.hit !== null && x.hit < 0.5 && x.tokens >= 10000)
 				.sort((a, b) => a.hit - b.hit);
 			const globalUnhealthy = globalHit !== null && globalHit < 0.5;
+			const peakInfo = peakSavingOf(breakdown);
+			const wsRanking = workspaceRanking(sessions);
+			const topSteps = Array.isArray(totals?.topSteps) ? totals.topSteps : [];
 
 			return react.createElement("div", { className: "dbs_root" },
 				// ── 标题行
@@ -575,6 +631,61 @@ window.__ModuleLoader__.load({
 						"「" + x.ws + "」命中率 " + Math.round(x.hit * 100) + "%（输入 " + fmtTokens(x.tokens) + "）——重复计费风险高，检查是否频繁重发相同上下文。"
 					))
 				),
+				// ── 最贵请求 Top-N ──
+				(topSteps?.length ?? 0) > 0 && react.createElement("details", { className: "dbs_card", open: true },
+					react.createElement("summary", { className: "dbs_card_title", style: { cursor: "pointer" } },
+						react.createElement("span", null, "🔥 最贵的 " + Math.min(topSteps.length, 10) + " 次请求"),
+						react.createElement("span", { className: "dbs_muted" }, "烧钱往往集中在个别请求")
+					),
+					react.createElement("div", { className: "dbs_sessions", style: { maxHeight: "240px" } },
+						topSteps.map((s, i) => react.createElement("div", { key: s.kind + "|" + i, className: "dbs_sess_row" },
+							react.createElement("span", { className: "dbs_sess_title", title: s.model }, "#" + (i + 1) + " " + (s.kind === "compaction" ? "压缩摘要" : "第 " + (s.turn + 1) + " 轮请求") + " · " + s.model),
+							react.createElement("span", { className: "dbs_muted" }, fmtDate(s.time)),
+							react.createElement("span", { className: "dbs_value" }, "入 " + fmtTokens((s.tokens.uncachedInput + s.tokens.cacheRead + s.tokens.cacheWrite)) + " · 出 " + fmtTokens(s.tokens.output)),
+							react.createElement("span", { className: "dbs_value" }, moneyOf(s.cost))
+						))
+					)
+				),
+				// ── 工作区成本排行 ──
+				wsRanking.length > 0 && react.createElement("details", { className: "dbs_card" },
+					react.createElement("summary", { className: "dbs_card_title", style: { cursor: "pointer" } },
+						react.createElement("span", null, "🏢 工作区成本排行"),
+						react.createElement("span", { className: "dbs_muted" }, "钱都烧在哪个工作区")
+					),
+					wsRanking.map((r, i) => react.createElement("div", { key: r.ws, className: "dbs_sess_row", style: i === 0 ? { background: "var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.1))" } : undefined },
+						react.createElement("span", { className: "dbs_sess_title", title: r.ws }, "#" + (i + 1) + " " + r.ws),
+						react.createElement("span", { className: "dbs_value", style: { fontWeight: 600 } }, moneyOf(r.cost))
+					))
+				),
+				// ── 对账闭环 ──
+				react.createElement("details", { className: "dbs_card" },
+					react.createElement("summary", { className: "dbs_card_title", style: { cursor: "pointer" } },
+						react.createElement("span", null, "🧾 对账（输入官方账单数字）"),
+						react.createElement("span", { className: "dbs_muted" }, "算出偏差百分比")
+					),
+					react.createElement("div", { className: "dbs_filter_bar" },
+						react.createElement("input", {
+							className: "dbs_input",
+							placeholder: "官方账单金额（如 37.16）",
+							value: officialInput,
+							onChange: (e) => setOfficialInput(e.target.value)
+						}),
+						react.createElement("span", { className: "dbs_muted" }, "插件估算 " + moneyOf(totals?.cost ?? 0))
+					),
+					officialInput.trim() !== "" && (() => {
+						const official = Number(officialInput);
+						const r = Number.isFinite(official) && official > 0 ? reconcileDeviation(totals?.cost ?? 0, official) : null;
+						if (r === null) return react.createElement("div", { className: "dbs_muted" }, "请输入有效的官方账单金额。");
+						const absRatio = Math.abs(r.ratio);
+						const color = absRatio <= 0.02 ? "var(--dsw-alias-state-success-primary,#10b981)" : absRatio <= 0.05 ? "var(--dsw-alias-state-warn-primary,#f59e0b)" : "var(--dsw-alias-state-error-primary,#ef4444)";
+						return react.createElement("div", { className: "dbs_muted" },
+							"差值 " + (r.diff >= 0 ? "+" : "") + moneyOf(r.diff) + " · 偏差 " + (r.ratio * 100).toFixed(2) + "%",
+							react.createElement("span", { style: { color, fontWeight: 600 } },
+								"  → " + (absRatio <= 0.02 ? "在合理范围 ✅" : absRatio <= 0.05 ? "略有偏差，可核对辅助调用 ⚠️" : "偏差较大，请检查价格表/会话覆盖 ❌")
+							)
+						);
+					})()
+				),
 				// ── 计算步骤明细卡(整卡与逐模型均可折叠, 默认收缩) ──
 				react.createElement("details", { className: "dbs_card" },
 					react.createElement("summary", { className: "dbs_card_title", style: { cursor: "pointer" } },
@@ -583,6 +694,9 @@ window.__ModuleLoader__.load({
 					),
 					react.createElement("div", { className: "dbs_formula" },
 						"费用 = Σ [ (未命中输入 + 缓存写入) × 未命中价\n       + 缓存命中 × 命中价 + 输出 × 输出价 ] ÷ 1,000,000\n单价单位: 元 / 百万 tokens（官方口径）\n含主请求与压缩摘要(compaction/summary)用量"
+					),
+					peakInfo.total > 0 && peakInfo.peakCost > 0 && react.createElement("div", { className: "dbs_muted" },
+						"💡 错峰建议：高峰时段花费 " + moneyOf(peakInfo.peakCost) + "，占 " + Math.round(peakInfo.peakRatio * 100) + "%。高峰价为空闲价 2 倍——把重活挪到周末或工作日晚间（空闲时段）可省约 " + moneyOf(peakInfo.save) + "。"
 					),
 					breakdown.length === 0
 						? react.createElement("div", { className: "dbs_muted" }, "暂无消耗数据（新会话产生 token 后自动出现）")
@@ -655,10 +769,31 @@ window.__ModuleLoader__.load({
 					),
 					react.createElement("div", { className: "dbs_muted" }, pricing.note),
 					react.createElement("div", { className: "dbs_muted" }, pricing.billingRule),
-					react.createElement("div", { className: "dbs_hint" },
-						"来源: ",
-						react.createElement("a", { className: "dbs_link", href: pricing.source, target: "_blank", rel: "noreferrer" }, "官方定价页"),
-						" · 高峰 = 北京时间周一至周五 9:00-12:00 / 14:00-18:00，其余半价"
+					react.createElement("div", { className: "dbs_hint", style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" } },
+						react.createElement("span", null,
+							"来源: ",
+							react.createElement("a", { className: "dbs_link", href: pricing.source, target: "_blank", rel: "noreferrer" }, "官方定价页"),
+							" · 高峰 = 北京时间周一至周五 9:00-12:00 / 14:00-18:00，其余半价" + (pricing.snapshotDate ? " · 内置快照 " + pricing.snapshotDate : "")
+						),
+						react.createElement("button", {
+							type: "button",
+							className: "dbs_btn",
+							disabled: pricingCheck !== null && pricingCheck.loading === true,
+							onClick: () => {
+								setPricingCheck({ loading: true });
+								fetch("/balance-stats/check-pricing", { cache: "no-store" })
+									.then((r) => r.json())
+									.then((j) => setPricingCheck({ loading: false, result: j }))
+									.catch(() => setPricingCheck({ loading: false, result: { ok: false, error: "client-error" } }));
+							}
+						}, pricingCheck !== null && pricingCheck.loading === true ? "检查中…" : "检查官方价格")
+					),
+					pricingCheck !== null && pricingCheck.loading !== true && react.createElement("div", { className: "dbs_muted" },
+						pricingCheck.result?.ok === true
+							? (pricingCheck.result.upToDate
+								? "✅ 与官方一致（快照 " + pricingCheck.result.snapshotDate + "，检查于 " + fmtDate(pricingCheck.result.checkedAt) + "）"
+								: "⚠️ 官方价格已变化 " + pricingCheck.result.differences.length + " 处：" + pricingCheck.result.differences.map((d) => d.model + " " + d.bucket + " " + d.local + "→" + d.official).join("；") + " —— 需要更新插件内置价格表")
+							: "❌ 检查失败（" + (pricingCheck.result?.message ?? pricingCheck.result?.error ?? "未知错误") + "）" + (pricingCheck.result?.hint ? "；" + pricingCheck.result.hint : "")
 					)
 				),
 				// ── 会话明细(按工作区/时间/关键词筛选)
@@ -730,6 +865,8 @@ window.__ModuleLoader__.load({
 		const inject = ["slots", "sessions"];
 
 		function apply(ctx) {
+			// 暴露会话列表 feed 给共享仓库, 供右上角胶囊读取"当前会话"实时花费
+			kpiStore.sessionsFeed = ctx.sessions;
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "dsh-balance-stats",
@@ -748,7 +885,7 @@ window.__ModuleLoader__.load({
 
 		exports.apply = apply;
 		exports.inject = inject;
-		exports._test = { sumPeriod, dayKeyOfTs };
+		exports._test = { sumPeriod, dayKeyOfTs, peakSavingOf, workspaceRanking, reconcileDeviation };
 		return module.exports;
 		//#endregion
 	}

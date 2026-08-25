@@ -164,6 +164,19 @@ assert(near(round6(dayTotal), json.totals.cost, 1e-6), '逐日合计与总花费
 assert(json.budget !== undefined && json.budget.daily === 0, '默认预算为 0(关闭), got ' + JSON.stringify(json.budget))
 assert(json.totals.aux !== undefined && json.totals.aux.titles === 1 && json.totals.aux.searches === 1, '辅助调用计数, got ' + JSON.stringify(json.totals.aux))
 
+// ── 最贵请求 Top-N ──
+// 排序: 压缩 0.033 > pro step(0,0) 0.01098 > sessionB offpeak 0.002445 > cold 0.001313 > flash 0.00069
+assert(Array.isArray(json.totals.topSteps) && json.totals.topSteps.length === 5, 'topSteps 共 5 条, got ' + (json.totals.topSteps ?? []).length)
+const ts0 = json.totals.topSteps[0]
+assert(ts0.kind === 'compaction' && near(ts0.cost, 0.033), 'Top1 = 压缩摘要 ¥0.033, got ' + JSON.stringify(ts0))
+const ts1 = json.totals.topSteps[1]
+assert(ts1.kind === 'step' && ts1.model === 'deepseek-v4-pro' && ts1.turn === 0 && ts1.step === 0 && near(ts1.cost, 0.01098), 'Top2 = pro 首轮请求 ¥0.01098, got ' + JSON.stringify(ts1))
+assert(near(json.totals.topSteps[2].cost, 0.002445) && near(json.totals.topSteps[3].cost, 0.001313) && near(json.totals.topSteps[4].cost, 0.00069), 'Top3-5 排序正确')
+assert(json.totals.topSteps.every((s) => s.key === undefined), 'topSteps 不含内部 key')
+
+// ── 定价快照字段 ──
+assert(typeof json.pricing.snapshotDate === 'string' && json.pricing.snapshotDate.length === 10, '定价快照日期存在, got ' + json.pricing.snapshotDate)
+
 // ── query 路由容错 ──
 const res2 = { writeHead: () => {}, end: (b) => { res2.body = b } }
 await routes.get('/balance-stats/query').handler({ method: 'GET', url: '/balance-stats/query' }, res2)

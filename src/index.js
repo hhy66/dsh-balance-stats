@@ -16,6 +16,8 @@
  *    并附官方定价表与扣费规则原文, 供与官方账单逐项对账。
  */
 import { z } from 'zod'
+import http from 'node:http'
+import tls from 'node:tls'
 
 export const name = 'dsh-balance-stats'
 
@@ -45,6 +47,7 @@ const OFFICIAL_NOTES = {
   pricingUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
   usageUrl: 'https://platform.deepseek.com/usage',
   balanceApiUrl: 'https://api-docs.deepseek.com/api/get-user-balance',
+  snapshotDate: '2026-08-19',
 }
 
 const round6 = (n) => Math.round(n * 1e6) / 1e6
@@ -126,6 +129,102 @@ const dayKeyOf = (timestamp) => {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
 }
 
+/** 单步花费 Top-N 维护: 按 key 去重(同 key 后者替换前者), 按 cost 降序保留前 max 个。 */
+const upsertTop = (list, key, entry, max = 10) => {
+  const next = [...list.filter((e) => e.key !== key), entry]
+  next.sort((a, b) => b.cost - a.cost)
+  return next.slice(0, max)
+}
+
+/** 经 HTTP 代理(如 127.0.0.1:7897)通过 CONNECT 隧道 GET 一个 HTTPS 页面, 返回原始响应文本。
+ *  用于"定价自检"在需要代理的网络上抓取官方定价页; 无需代理时走全局 fetch。 */
+const getHtmlViaProxy = (urlStr, proxyStr, timeoutMs) => new Promise((resolve, reject) => {
+  const target = new URL(urlStr)
+  if (!proxyStr) {
+    // 直连(全局 fetch)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    fetch(urlStr, { signal: controller.signal, headers: { 'User-Agent': 'dsh-balance-stats' } })
+      .then(async (r) => {
+        const text = await r.text()
+        resolve({ status: r.status, body: text })
+      })
+      .catch(reject)
+      .finally(() => clearTimeout(timer))
+    return
+  }
+  const proxy = new URL(proxyStr)
+  let settled = false
+  const timer = setTimeout(() => finish(() => reject(new Error('check-pricing timeout'))), timeoutMs)
+  const finish = (fn) => { if (settled) return; settled = true; clearTimeout(timer); fn() }
+  const fail = (e) => finish(() => reject(e))
+  const proxyReq = http.request({
+    method: 'CONNECT',
+    host: proxy.hostname,
+    port: Number(proxy.port || 80),
+    path: target.hostname + ':' + (target.port || 443),
+  }, (proxyRes) => {
+    if (proxyRes.statusCode !== 200) {
+      proxyRes.resume()
+      finish(() => reject(new Error('proxy CONNECT ' + proxyRes.statusCode)))
+      return
+    }
+    const socket = proxyRes.socket
+    const tlsSocket = tls.connect({ socket, servername: target.hostname }, () => {
+      const chunks = []
+      tlsSocket.on('data', (c) => chunks.push(c))
+      tlsSocket.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        const idx = raw.indexOf('\r\n\r\n')
+        const head = idx === -1 ? '' : raw.slice(0, idx)
+        const body = idx === -1 ? '' : raw.slice(idx + 4)
+        const status = Number((head.split('\r\n')[0] || '500').split(' ')[1]) || 500
+        finish(() => resolve({ status, body }))
+      })
+      tlsSocket.on('error', fail)
+      tlsSocket.write(`GET ${target.pathname}${target.search} HTTP/1.1\r\nHost: ${target.hostname}\r\nUser-Agent: dsh-balance-stats\r\nConnection: close\r\n\r\n`)
+    })
+    tlsSocket.on('error', fail)
+  })
+  proxyReq.on('error', fail)
+  proxyReq.end()
+})
+
+/** 从官方定价页 HTML 提取三模型 × 两时段的单价表(尽力而为, 结构变化时返回 null)。
+ *  依赖当前页面固定布局: 命中/未命中/输出 × 空闲/高峰 × 三模型 = 18 个"数字元"。 */
+const parseOfficialPricing = (html) => {
+  const text = String(html).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ')
+  const start = text.indexOf('百万tokens输入')
+  const end = text.indexOf('并发限制', start)
+  if (start === -1 || end === -1) return null
+  const nums = (text.slice(start, end).match(/\d+(?:\.\d+)?元/g) || []).map((s) => Number(s.replace('元', '')))
+  if (nums.length !== 18) return null
+  const result = {}
+  ;['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'].forEach((m, i) => {
+    result[m] = {
+      offpeak: { cacheHit: nums[i], cacheMiss: nums[6 + i], output: nums[12 + i] },
+      peak: { cacheHit: nums[3 + i], cacheMiss: nums[9 + i], output: nums[15 + i] },
+    }
+  })
+  return result
+}
+
+/** 与内置 OFFICIAL_PRICES 比对, 返回差异列表(空 = 一致)。 */
+const comparePricing = (current) => {
+  const diffs = []
+  for (const [model, tiers] of Object.entries(OFFICIAL_PRICES)) {
+    for (const tier of ['offpeak', 'peak']) {
+      for (const bucket of ['cacheHit', 'cacheMiss', 'output']) {
+        const local = OFFICIAL_PRICES[model][tier][bucket]
+        const official = current?.[model]?.[tier]?.[bucket]
+        if (official === undefined) continue
+        if (Math.abs(local - official) > 1e-9) diffs.push({ model, tier, bucket, local, official })
+      }
+    }
+  }
+  return diffs
+}
+
 /** 构造会话消耗投影单元。 */
 const makeConsumptionProjection = (getConfig) => {
   const emptyTiers = () => ({ peak: zeroBuckets(), offpeak: zeroBuckets() })
@@ -176,8 +275,22 @@ const makeConsumptionProjection = (getConfig) => {
           searches: z.number().int().nonnegative(),
         }).strict().optional(),
       }).strict()),
+      topSteps: z.array(z.object({
+        kind: z.enum(['step', 'compaction']),
+        model: z.string(),
+        turn: z.number().int().nonnegative(),
+        step: z.number().int().nonnegative(),
+        cost: z.number().nonnegative(),
+        time: z.number(),
+        tokens: z.object({
+          uncachedInput: z.number().int().nonnegative(),
+          cacheRead: z.number().int().nonnegative(),
+          cacheWrite: z.number().int().nonnegative(),
+          output: z.number().int().nonnegative(),
+        }).strict(),
+      }).strict()),
     }).strict(),
-    init: () => ({ currentModel: null, last: null, byModel: {}, modelOrder: [], byDay: {} }),
+    init: () => ({ currentModel: null, last: null, byModel: {}, modelOrder: [], byDay: {}, topSteps: [] }),
     apply: (state, event) => {
       let nextModel = state.currentModel
       if (event.type === 'request/header') {
@@ -215,10 +328,21 @@ const makeConsumptionProjection = (getConfig) => {
           curTiers2[tier2] = addBuckets(curTiers2[tier2], buckets2)
           const byModel2 = { ...state.byModel, [model2]: { tiers: curTiers2 } }
           const byDay2 = { ...state.byDay, [day2]: { cost: round6((state.byDay[day2]?.cost ?? 0) + eventCost2), tokens: addBuckets(state.byDay[day2]?.tokens ?? zeroBuckets(), buckets2) } }
+          const topSteps2 = upsertTop(state.topSteps, 'c' + event.seq, {
+            key: 'c' + event.seq,
+            kind: 'compaction',
+            model: model2,
+            turn: 0,
+            step: 0,
+            cost: round6(eventCost2),
+            time: resolvedTs2,
+            tokens: buckets2,
+          })
           return {
             ...state,
             byModel: byModel2,
             byDay: byDay2,
+            topSteps: topSteps2,
             modelOrder: isNew2 ? [...state.modelOrder, model2] : state.modelOrder,
           }
         }
@@ -281,12 +405,23 @@ const makeConsumptionProjection = (getConfig) => {
           tokens: addBuckets(byDay[day]?.tokens ?? zeroBuckets(), buckets),
         },
       }
+      const topSteps = upsertTop(state.topSteps, turn + '#' + step, {
+        key: turn + '#' + step,
+        kind: 'step',
+        model,
+        turn,
+        step,
+        cost: round6(eventCost),
+        time: resolvedTs,
+        tokens: buckets,
+      })
       return {
         ...state,
         currentModel: nextModel,
         last: { turn, step, model, tier, day, buckets, cost: eventCost },
         byModel,
         byDay,
+        topSteps,
         modelOrder: isNewModel ? [...state.modelOrder, model] : state.modelOrder,
       }
     },
@@ -331,6 +466,8 @@ const makeConsumptionProjection = (getConfig) => {
         }))
         .sort((a, b) => (a.day < b.day ? -1 : 1))
         .slice(-60)
+      // 单步花费 Top-N(去 key 后下发)
+      const topSteps = state.topSteps.map(({ key, ...rest }) => rest)
       return {
         models: state.modelOrder,
         cost: round6(cost),
@@ -339,9 +476,10 @@ const makeConsumptionProjection = (getConfig) => {
         currency: cfg.currency,
         breakdown,
         days,
+        topSteps,
       }
     },
-    stateVersion: 7,
+    stateVersion: 8,
   }
 }
 
@@ -400,6 +538,7 @@ export function apply(ctx, config) {
     defaultPrices: { ...(cfg.defaultPrices ?? DEFAULT_PRICES) },
     pricingNote: typeof cfg.pricingNote === 'string' && cfg.pricingNote !== '' ? cfg.pricingNote : OFFICIAL_NOTES.pricingNote,
     billingRule: typeof cfg.billingRule === 'string' && cfg.billingRule !== '' ? cfg.billingRule : OFFICIAL_NOTES.billingRule,
+    pricingCheckProxy: typeof cfg.pricingCheckProxy === 'string' ? cfg.pricingCheckProxy : '',
   }
   const getConfig = () => runtimeConfig
 
@@ -512,6 +651,7 @@ export function apply(ctx, config) {
     source: OFFICIAL_NOTES.pricingUrl,
     usageUrl: OFFICIAL_NOTES.usageUrl,
     balanceApiUrl: OFFICIAL_NOTES.balanceApiUrl,
+    snapshotDate: OFFICIAL_NOTES.snapshotDate,
     note: runtimeConfig.pricingNote,
     billingRule: runtimeConfig.billingRule,
     models: {
@@ -565,6 +705,7 @@ export function apply(ctx, config) {
         models: value.models,
         breakdown: value.breakdown ?? [],
         days: value.days ?? [],
+        topSteps: value.topSteps ?? [],
       }
     } catch {
       return null
@@ -618,6 +759,7 @@ export function apply(ctx, config) {
         models: value.models,
         breakdown: value.breakdown ?? [],
         days: value.days ?? [],
+        topSteps: value.topSteps ?? [],
       }
     } catch (error) {
       ctx.logger.warn(`[dsh-balance-stats] cold fold failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
@@ -740,6 +882,7 @@ export function apply(ctx, config) {
         // 跨会话合并: key = model|tier → { model, tier, buckets, prices, cost }
         const merged = new Map()
         const dayMap = new Map()
+        let topStepsAll = []
         const mergeEntry = (entry) => {
           const key = entry.model + '|' + entry.tier
           const prev = merged.get(key) ?? {
@@ -762,6 +905,7 @@ export function apply(ctx, config) {
           totals.tokens.cacheWrite += row.tokens.cacheWrite
           totals.tokens.output += row.tokens.output
           totals.cost += row.cost
+          for (const s of row.topSteps) topStepsAll.push(s)
           for (const model of row.models) {
             if (!(model in totals.costByModel)) {
               totals.costByModel[model] = 0
@@ -812,6 +956,8 @@ export function apply(ctx, config) {
             acc.searches += d.aux?.searches ?? 0
             return acc
           }, { titles: 0, searches: 0 })
+          topStepsAll.sort((a, b) => b.cost - a.cost)
+          totals.topSteps = topStepsAll.slice(0, 10)
           for (const model of totals.modelOrder) {
             totals.costByModel[model] = round6(totals.costByModel[model])
           }
@@ -848,6 +994,48 @@ export function apply(ctx, config) {
         })
       },
     }), 'dsh-balance-stats: stats route')
+
+    // 2.5 定价自检路由: 抓取官方定价页并与内置价格比对(尽力而为)
+    c.effect(() => c.webServer.register({
+      kind: 'exact',
+      path: '/balance-stats/check-pricing',
+      async handler(req, res) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          res.writeHead(405, { Allow: 'GET, HEAD' })
+          res.end()
+          return
+        }
+        if (req.method === 'HEAD') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end()
+          return
+        }
+        try {
+          const { status, body } = await getHtmlViaProxy(OFFICIAL_NOTES.pricingUrl, runtimeConfig.pricingCheckProxy, 8000)
+          if (status !== 200) throw new Error('官方页 HTTP ' + status)
+          const current = parseOfficialPricing(body)
+          if (current === null) {
+            sendJson(res, 200, { ok: false, error: 'parse-failed', message: '无法解析官方定价页(页面结构可能变化), 请人工核对官方页' })
+            return
+          }
+          const differences = comparePricing(current)
+          sendJson(res, 200, {
+            ok: true,
+            snapshotDate: OFFICIAL_NOTES.snapshotDate,
+            checkedAt: Date.now(),
+            differences,
+            upToDate: differences.length === 0,
+          })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: 'fetch-failed',
+            message: error instanceof Error ? error.message : String(error),
+            hint: '若本机需代理访问官方页, 请在配置里设置 pricingCheckProxy(如 http://127.0.0.1:7897)',
+          })
+        }
+      },
+    }), 'dsh-balance-stats: check pricing route')
 
     // 3. 会话消耗投影注册
     c.sessionProjections.register(makeConsumptionProjection(getConfig))

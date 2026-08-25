@@ -66,7 +66,8 @@ console.log('  shell.overlay 渲染 OK, html 长度', cornerHtml.length)
 
 // ── 时段切片函数(时间筛选 → 时段内消耗 的核心) ──
 const assert = (cond, msg) => { if (!cond) throw new Error('断言失败: ' + msg) }
-const { sumPeriod, dayKeyOfTs } = mod._test ?? {}
+const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps
+const { sumPeriod, dayKeyOfTs, peakSavingOf, workspaceRanking, reconcileDeviation } = mod._test ?? {}
 if (!sumPeriod) throw new Error('_test.sumPeriod 未导出')
 const days = [
   { day: '2026-08-14', cost: 10, tokens: { uncachedInput: 1, cacheRead: 2, cacheWrite: 3, output: 4 } },
@@ -88,5 +89,20 @@ const r6 = sumPeriod([{ day: '2026-08-15', cost: 7 }], '2026-08-15', '2026-08-15
 assert(r6.cost === 7 && r6.tokens.output === 0, '缺 tokens 字段兜底为 0')
 assert(dayKeyOfTs(1786896000000 + 10 * 3600e3).length === 10, 'dayKeyOfTs 返回 YYYY-MM-DD')
 console.log('  时段切片 sumPeriod 断言全部通过')
+
+// ── 新增纯函数(错峰节省 / 工作区排行 / 对账偏差) ──
+const ps = peakSavingOf([{ model: 'm', tiers: [{ tier: 'peak', cost: 3 }, { tier: 'offpeak', cost: 1 }] }])
+assert(ps.peakCost === 3 && ps.total === 4 && near(ps.peakRatio, 0.75) && near(ps.save, 1.5), 'peakSavingOf 计算')
+const ps2 = peakSavingOf(null)
+assert(ps2.total === 0 && ps2.save === 0, 'peakSavingOf 空数据不崩溃')
+const wr = workspaceRanking([{ workspace: 'A', cost: 2 }, { workspace: 'B', cost: 5 }, { workspace: 'A', cost: 1 }])
+assert(wr.length === 2 && wr[0].ws === 'B' && wr[0].cost === 5 && wr[1].ws === 'A' && wr[1].cost === 3, 'workspaceRanking 聚合降序')
+assert(workspaceRanking([]).length === 0, 'workspaceRanking 空数据')
+const rd0 = reconcileDeviation(10, 10)
+assert(rd0.diff === 0 && rd0.ratio === 0, '对账零偏差')
+const rd1 = reconcileDeviation(9.8, 10)
+assert(near(rd1.diff, -0.2) && near(rd1.ratio, -0.02), '对账负偏差')
+assert(reconcileDeviation(10, 0) === null, '对账官方为 0 返回 null')
+console.log('  错峰/排行/对账纯函数断言全部通过')
 
 console.log('✅ 客户端渲染冒烟测试全部通过')
