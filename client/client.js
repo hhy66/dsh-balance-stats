@@ -585,7 +585,12 @@ window.__ModuleLoader__.load({
 					react.createElement("div", { className: "dbs_hint" },
 						"余额来自官方接口 ",
 						react.createElement("a", { className: "dbs_link", href: pricing?.balanceApiUrl ?? "https://api-docs.deepseek.com/api/get-user-balance", target: "_blank", rel: "noreferrer" }, "GET /user/balance"),
-						"，每 " + Math.max(1, Math.round((balance?.refreshIntervalMs ?? 300000) / 60000)) + " 分钟自动更新。"
+						"，每 " + (() => {
+							const ri = balance?.refreshIntervalMs ?? 3000;
+							if (ri >= 60000) return Math.max(1, Math.round(ri / 60000)) + " 分钟";
+							if (ri >= 1000) return Math.round(ri / 1000) + " 秒";
+							return ri + " 毫秒";
+						})() + " 自动更新。"
 					)
 				),
 				// ── 消耗汇总卡(默认收缩) ──

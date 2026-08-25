@@ -223,7 +223,7 @@ dsh plugin --profile web remove dsh-balance-stats
 ```yaml
 - id: dsh-balance-stats
   config:
-    refreshIntervalMs: 300000   # 余额查询间隔(毫秒)，默认 5 分钟
+    refreshIntervalMs: 3000      # 余额查询间隔(毫秒)：3 秒 = 悬浮胶囊余额 3 秒热刷新
     warningThreshold: 10        # 余额低于此值 → 黄灯(元)
     dangerThreshold: 5          # 余额低于此值 → 红灯(元)
     dailyBudget: 20             # 单日预算上限(元)；0 = 关闭预算制动

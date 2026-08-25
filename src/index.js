@@ -536,7 +536,7 @@ export function apply(ctx, config) {
     apiKey: typeof cfg.apiKey === 'string' ? cfg.apiKey : '',
     apiKeyRef: typeof cfg.apiKeyRef === 'string' && cfg.apiKeyRef !== '' ? cfg.apiKeyRef : 'DEEPSEEK_API_KEY',
     baseUrl: typeof cfg.baseUrl === 'string' && cfg.baseUrl !== '' ? cfg.baseUrl : 'https://api.deepseek.com',
-    refreshIntervalMs: typeof cfg.refreshIntervalMs === 'number' ? cfg.refreshIntervalMs : 300000,
+    refreshIntervalMs: typeof cfg.refreshIntervalMs === 'number' ? cfg.refreshIntervalMs : 3000,
     timeoutMs: typeof cfg.timeoutMs === 'number' ? cfg.timeoutMs : 8000,
     currency: typeof cfg.currency === 'string' && cfg.currency !== '' ? cfg.currency : 'CNY',
     warningThreshold: typeof cfg.warningThreshold === 'number' ? cfg.warningThreshold : 10,

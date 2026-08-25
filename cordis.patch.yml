@@ -16,7 +16,8 @@
       config:
         apiKeyRef: DEEPSEEK_API_KEY
         baseUrl: https://api.deepseek.com
-        refreshIntervalMs: 300000
+        # 余额查询间隔(毫秒): 3 秒 = 悬浮胶囊余额 3 秒热刷新; 觉得太频繁可调大
+        refreshIntervalMs: 3000
         timeoutMs: 8000
         currency: CNY
         warningThreshold: 10
