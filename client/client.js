@@ -236,19 +236,19 @@ window.__ModuleLoader__.load({
 			const left = kpi.daysLeft === null ? "—" : (kpi.daysLeft >= 365 ? ">1年" : "≈" + (kpi.daysLeft < 1 ? kpi.daysLeft.toFixed(1) : String(Math.round(kpi.daysLeft))) + "天");
 			const [expanded, setExpanded] = react.useState(false);
 			const children = [
-				react.createElement("span", { className: "dbs_dot " + dotCls }),
-				react.createElement("span", { className: "dbs_corner_val" }, kpi.money(kpi.totalBalance))
+				react.createElement("span", { key: "dot", className: "dbs_dot " + dotCls }),
+				react.createElement("span", { key: "balance", className: "dbs_corner_val" }, kpi.money(kpi.totalBalance))
 			];
 			if (expanded) {
 				children.push(
-					react.createElement("span", { className: "dbs_corner_sep" }, "·"),
-					react.createElement("span", null, left),
-					react.createElement("span", { className: "dbs_corner_sep" }, "·"),
-					react.createElement("span", { className: "dbs_corner_lab" }, "今"),
-					react.createElement("span", { className: "dbs_corner_val" }, kpi.money(kpi.todayCost)),
-					react.createElement("span", { className: "dbs_corner_sep" }, "·"),
-					react.createElement("span", { className: "dbs_corner_lab" }, "月"),
-					react.createElement("span", { className: "dbs_corner_val" }, kpi.money(kpi.monthCost))
+					react.createElement("span", { key: "s1", className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", { key: "left", className: "dbs_corner_val" }, left),
+					react.createElement("span", { key: "s2", className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", { key: "tl", className: "dbs_corner_lab" }, "今"),
+					react.createElement("span", { key: "today", className: "dbs_corner_val" }, kpi.money(kpi.todayCost)),
+					react.createElement("span", { key: "s3", className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", { key: "ml", className: "dbs_corner_lab" }, "月"),
+					react.createElement("span", { key: "month", className: "dbs_corner_val" }, kpi.money(kpi.monthCost))
 				);
 			}
 			return react.createElement("div", {

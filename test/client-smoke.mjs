@@ -5,7 +5,10 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 
-const requireG = createRequire('file:///C:/Program Files/nodejs/node_modules/@deepseek-ai/dsh/package.json')
+// react/react-dom 从 DSH 树中实际存在的包解析(版本须成对)。
+// 注: DSH 根 node_modules 现在只有 react 无 react-dom, 成对的 react/react-dom
+// 位于 dsh-client-ui-trajectory 的依赖里; 若此路径失效, 测试会立即报错。
+const requireG = createRequire('file:///C:/Program Files/nodejs/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-trajectory/package.json')
 const React = requireG('react')
 const { renderToString } = requireG('react-dom/server')
 
@@ -44,9 +47,9 @@ const ctx = {
 mod.apply(ctx)
 
 const settingsReg = registrations.find((r) => r.slot === 'settings.section')
-const footerReg = registrations.find((r) => r.slot === 'sidebar.footer.action')
+const overlayReg = registrations.find((r) => r.slot === 'shell.overlay')
 if (!settingsReg) throw new Error('settings.section 未注册')
-if (!footerReg) throw new Error('sidebar.footer.action 未注册')
+if (!overlayReg) throw new Error('shell.overlay 未注册')
 
 // 渲染设置面板(初始 data=null 状态, 与真实首帧一致)
 const settingsHtml = renderToString(React.createElement(settingsReg.Comp, { sessionsFeed: undefined }))
@@ -54,12 +57,12 @@ if (!settingsHtml.includes('余额与消耗')) throw new Error('设置面板渲�
 if (!settingsHtml.includes('KPI') && !settingsHtml.includes('账户余额')) throw new Error('设置面板渲染缺少卡片')
 console.log('  settings.section 渲染 OK, html 长度', settingsHtml.length)
 
-// 渲染侧边栏页脚(宽/窄两种形态)
-const footWide = renderToString(React.createElement(footerReg.Comp, { wide: true }))
-const footNarrow = renderToString(React.createElement(footerReg.Comp, { wide: false }))
-if (!footWide.includes('dbs_foot')) throw new Error('页脚宽形态渲染失败')
-if (!footNarrow.includes('dbs_foot_rail')) throw new Error('页脚窄形态渲染失败')
-console.log('  sidebar.footer.action 渲染 OK (wide', footWide.length, 'bytes / narrow', footNarrow.length, 'bytes)')
+// 渲染右上角悬浮 KPI 胶囊(shell.overlay 槽位, 默认折叠态)
+const cornerHtml = renderToString(React.createElement(overlayReg.Comp))
+if (!cornerHtml.includes('dbs_corner')) throw new Error('右上角胶囊渲染失败')
+if (!cornerHtml.includes('dbs_corner_compact')) throw new Error('胶囊默认折叠态缺失')
+if (!cornerHtml.includes('余额')) throw new Error('胶囊缺少余额显示')
+console.log('  shell.overlay 渲染 OK, html 长度', cornerHtml.length)
 
 // ── 时段切片函数(时间筛选 → 时段内消耗 的核心) ──
 const assert = (cond, msg) => { if (!cond) throw new Error('断言失败: ' + msg) }
