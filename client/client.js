@@ -116,7 +116,7 @@ window.__ModuleLoader__.load({
 			return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
 		};
 		const shortId = (id) => (typeof id === "string" && id.length > 8 ? id.slice(0, 8) : id ?? "—");
-		const TIER_LABEL = { offpeak: "空闲时段", peak: "高峰时段" };
+		const TIER_LABEL = { legacy: "旧价格(8-17前)", offpeak: "空闲时段", peak: "高峰时段" };
 
 		/** 本地日历日 key: YYYY-MM-DD(与宿主端一致, 用于逐日数据切片) */
 		const dayKeyOfTs = (ts) => {

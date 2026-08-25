@@ -90,36 +90,41 @@ assert(json.totals.tokens.cacheRead === 50450, '缓存命中 = 50450, got ' + js
 assert(json.totals.tokens.cacheWrite === 170, '缓存写入 = 170, got ' + json.totals.tokens.cacheWrite)
 assert(json.totals.tokens.output === 600, '输出 = 600, got ' + json.totals.tokens.output)
 
-// ── 分层计价(新口径: 高峰=周一至五 9-12/14-18, 其余半价; 无旧价) ──
+// ── 分层计价(分段口径: 8-17 00:00 前旧价, 之后工作日峰谷) ──
 // pro/peak(会话A): (1700+160)×9 + 50300×0.30 + 450×27 = 43980 /1e6 = 0.04398
 // flash/peak(会话A): (100+10)×3.0 + 0×0.10 + 40×9.0 = 690 /1e6 = 0.00069
-// pro/offpeak(会话B+冷读): (500+0)×4.5 + 150×0.15 + 110×13.5 = 3757.5 /1e6 = 0.003758
-// 合计 0.04398 + 0.00069 + 0.003758 = 0.048428
-assert(near(json.totals.cost, 0.048428), '总花费 = 0.048428, got ' + json.totals.cost)
+// pro/offpeak(会话B): (300+0)×4.5 + 100×0.15 + 80×13.5 = 2445 /1e6 = 0.002445
+// pro/legacy(冷读, 8-16 在 8-17 之前): (200+0)×3 + 50×0.025 + 30×6 = 781.25 /1e6 = 0.000781
+// 合计 0.04398 + 0.00069 + 0.002445 + 0.000781 = 0.047896
+assert(near(json.totals.cost, 0.047896), '总花费 = 0.047896, got ' + json.totals.cost)
 
 const byModel = Object.fromEntries(json.breakdown.map((g) => [g.model, g]))
 assert(byModel['deepseek-v4-pro'] !== undefined && byModel['deepseek-v4-flash'] !== undefined, 'breakdown 含 pro 与 flash')
 const proTiers = Object.fromEntries(byModel['deepseek-v4-pro'].tiers.map((t) => [t.tier, t]))
 const flashTiers = Object.fromEntries(byModel['deepseek-v4-flash'].tiers.map((t) => [t.tier, t]))
-assert(proTiers.peak && proTiers.offpeak, 'pro 有 peak+offpeak 两个时段')
+assert(proTiers.peak && proTiers.offpeak && proTiers.legacy, 'pro 有 legacy+peak+offpeak 三个时段')
 assert(flashTiers.peak, 'flash 有 peak 时段')
 
 assert(near(proTiers.peak.cost, 0.04398), 'pro peak 花费, got ' + proTiers.peak.cost)
 assert(near(proTiers.peak.prices.cacheMiss, 9) && near(proTiers.peak.prices.cacheHit, 0.3) && near(proTiers.peak.prices.output, 27), 'pro peak 官方高峰价')
 assert(proTiers.peak.buckets.uncachedInput === 1700 && proTiers.peak.buckets.cacheRead === 50300 && proTiers.peak.buckets.cacheWrite === 160 && proTiers.peak.buckets.output === 450, 'pro peak 分桶正确')
 
-assert(near(proTiers.offpeak.cost, 0.003758), 'pro offpeak 花费(含周末冷读), got ' + proTiers.offpeak.cost)
+assert(near(proTiers.offpeak.cost, 0.002445), 'pro offpeak 花费, got ' + proTiers.offpeak.cost)
 assert(near(proTiers.offpeak.prices.cacheMiss, 4.5) && near(proTiers.offpeak.prices.cacheHit, 0.15) && near(proTiers.offpeak.prices.output, 13.5), 'pro offpeak 官方空闲价')
-assert(proTiers.offpeak.buckets.uncachedInput === 500 && proTiers.offpeak.buckets.cacheRead === 150 && proTiers.offpeak.buckets.output === 110, 'pro offpeak 分桶(周末按空闲)')
+assert(proTiers.offpeak.buckets.uncachedInput === 300 && proTiers.offpeak.buckets.cacheRead === 100 && proTiers.offpeak.buckets.output === 80, 'pro offpeak 分桶')
+
+assert(near(proTiers.legacy.cost, 0.000781), 'pro legacy 旧价花费(8-17 前请求), got ' + proTiers.legacy.cost)
+assert(near(proTiers.legacy.prices.cacheMiss, 3) && near(proTiers.legacy.prices.cacheHit, 0.025) && near(proTiers.legacy.prices.output, 6), 'pro legacy 官方旧价')
+assert(proTiers.legacy.buckets.uncachedInput === 200 && proTiers.legacy.buckets.cacheRead === 50 && proTiers.legacy.buckets.output === 30, 'pro legacy 分桶(冷读 8-16 按旧价)')
 
 assert(near(flashTiers.peak.cost, 0.00069), 'flash peak 花费, got ' + flashTiers.peak.cost)
 
-// ── 官方定价 payload(含新模型, 无旧价) ──
+// ── 官方定价 payload(展示表与官方页一致: 无 legacy, 含新模型) ──
 assert(json.pricing !== null, '定价 payload 存在')
 assert(json.pricing.models['deepseek-v4-pro'].peak.output === 27, 'pro 高峰输出价 27')
 assert(json.pricing.models['deepseek-v4-flash-vision-exp'] !== undefined, '含新模型 vision-exp')
 assert(json.pricing.models['deepseek-v4-flash-vision-exp'].peak.cacheMiss === 3.0, 'vision-exp 高峰未命中价 3.0')
-assert(json.pricing.models['deepseek-v4-pro'].legacy === undefined, '旧价已移除')
+assert(json.pricing.models['deepseek-v4-pro'].legacy === undefined, '展示表不含 legacy(旧价仅用于分段计费)')
 assert(json.pricing.effectiveAt === undefined, 'effectiveAt 字段已移除')
 assert(typeof json.pricing.note === 'string' && json.pricing.note.includes('周一至周五'), '官方说明含"周一至周五"高峰规则')
 
@@ -132,7 +137,7 @@ const coldRow = json.sessions.find((s) => s.id === 'session-old')
 assert(coldRow !== undefined, '冷读会话出现在明细中')
 assert(coldRow.title === '旧会话标题', '冷读会话标题取自 session/title 事件, got ' + coldRow.title)
 assert(coldRow.workspace === 'D:\\old', '冷读会话工作区 = D:\\old, got ' + coldRow.workspace)
-assert(near(coldRow.cost, 0.001313), '冷读会话花费 = 0.001313(周末空闲价), got ' + coldRow.cost)
+assert(near(coldRow.cost, 0.000781), '冷读会话花费 = 0.000781(8-16 旧价), got ' + coldRow.cost)
 assert(json.cold !== undefined && json.cold.status === 'ready' && json.cold.count === 1, 'cold 状态字段, got ' + JSON.stringify(json.cold))
 
 // ── 标题与 Web 界面同源 ──
@@ -155,7 +160,7 @@ assert(dPeak.tokens.uncachedInput === 2100 && dPeak.tokens.cacheRead === 50400 &
 assert(dPeak.aux !== undefined && dPeak.aux.titles === 1 && dPeak.aux.searches === 1, '8-18 辅助调用计数, got ' + JSON.stringify(dPeak.aux))
 // 8-16(周末冷读日)
 const dOld = gotByDay.get(dayOf(T_OLD))
-assert(dOld !== undefined && near(dOld.cost, 0.001313), '8-16 冷读花费 = 0.001313, got ' + (dOld && dOld.cost))
+assert(dOld !== undefined && near(dOld.cost, 0.000781), '8-16 冷读花费 = 0.000781(旧价), got ' + (dOld && dOld.cost))
 // 逐日合计 = 总花费(一致性)
 const dayTotal = (json.totals.days ?? []).reduce((s, d) => s + d.cost, 0)
 assert(near(round6(dayTotal), json.totals.cost, 1e-6), '逐日合计与总花费一致')
@@ -165,13 +170,13 @@ assert(json.budget !== undefined && json.budget.daily === 0, '默认预算为 0(
 assert(json.totals.aux !== undefined && json.totals.aux.titles === 1 && json.totals.aux.searches === 1, '辅助调用计数, got ' + JSON.stringify(json.totals.aux))
 
 // ── 最贵请求 Top-N ──
-// 排序: 压缩 0.033 > pro step(0,0) 0.01098 > sessionB offpeak 0.002445 > cold 0.001313 > flash 0.00069
+// 排序: 压缩 0.033 > pro step(0,0) 0.01098 > sessionB offpeak 0.002445 > cold legacy 0.000781 > flash 0.00069
 assert(Array.isArray(json.totals.topSteps) && json.totals.topSteps.length === 5, 'topSteps 共 5 条, got ' + (json.totals.topSteps ?? []).length)
 const ts0 = json.totals.topSteps[0]
 assert(ts0.kind === 'compaction' && near(ts0.cost, 0.033), 'Top1 = 压缩摘要 ¥0.033, got ' + JSON.stringify(ts0))
 const ts1 = json.totals.topSteps[1]
 assert(ts1.kind === 'step' && ts1.model === 'deepseek-v4-pro' && ts1.turn === 0 && ts1.step === 0 && near(ts1.cost, 0.01098), 'Top2 = pro 首轮请求 ¥0.01098, got ' + JSON.stringify(ts1))
-assert(near(json.totals.topSteps[2].cost, 0.002445) && near(json.totals.topSteps[3].cost, 0.001313) && near(json.totals.topSteps[4].cost, 0.00069), 'Top3-5 排序正确')
+assert(near(json.totals.topSteps[2].cost, 0.002445) && near(json.totals.topSteps[3].cost, 0.000781) && near(json.totals.topSteps[4].cost, 0.00069), 'Top3-5 排序正确')
 assert(json.totals.topSteps.every((s) => s.key === undefined), 'topSteps 不含内部 key')
 
 // ── 定价快照字段 ──
@@ -183,5 +188,5 @@ await routes.get('/balance-stats/query').handler({ method: 'GET', url: '/balance
 const q = JSON.parse(res2.body)
 assert(q.ok === false || q.ok === true, 'query 返回合法 JSON')
 
-console.log('✅ 全部断言通过 (v0.3 官方新定价: 工作日峰谷 + vision-exp 模型, 无旧价)')
+console.log('✅ 全部断言通过 (分段计费: 8-17 前旧价 + 之后工作日峰谷, 含 vision-exp 模型)')
 console.log(JSON.stringify({ totals: json.totals, breakdown: json.breakdown, pricingModels: Object.keys(json.pricing.models) }, null, 2))

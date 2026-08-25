@@ -23,14 +23,21 @@ export const name = 'dsh-balance-stats'
 
 const DEFAULT_PRICES = { cacheHit: 0.1, cacheMiss: 1, output: 2 }
 
-/** 官方定价表(元 / 每百万 token, 空闲时段 = 高峰时段半价)。
+/** 新峰谷定价生效时刻: 2026-08-17T00:00:00+08:00(此前的请求按旧价计费) */
+const PRICING_CUTOFF_MS = 1786896000000
+
+/** 官方定价表(元 / 每百万 token)。
+ *  legacy = 2026-08-17 00:00(北京)前旧价, 官方账单分段计费, 历史请求按旧价;
+ *  offpeak/peak = 新峰谷价(高峰价 = 空闲价 × 2)。
  *  出处: https://api-docs.deepseek.com/zh-cn/quick_start/pricing */
 const OFFICIAL_PRICES = {
   'deepseek-v4-flash': {
+    legacy: { cacheHit: 0.02, cacheMiss: 1, output: 2 },
     offpeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
     peak: { cacheHit: 0.10, cacheMiss: 3.0, output: 9.0 },
   },
   'deepseek-v4-pro': {
+    legacy: { cacheHit: 0.025, cacheMiss: 3, output: 6 },
     offpeak: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
     peak: { cacheHit: 0.30, cacheMiss: 9.0, output: 27.0 },
   },
@@ -42,7 +49,7 @@ const OFFICIAL_PRICES = {
 
 /** 官方说明文案(可经配置覆盖)。 */
 const OFFICIAL_NOTES = {
-  pricingNote: '官方说明：下表所列模型价格以「百万 tokens」为单位，根据模型输入和输出的总 token 数进行计量计费。采用峰谷定价：高峰时段为北京时间周一至周五 9:00-12:00、14:00-18:00，空闲时段价格为高峰时段的一半。发送给 deepseek-v4-flash-vision-exp 的图片按其尺寸换算成 token，与文本 token 一并计费。',
+  pricingNote: '官方说明：下表所列模型价格以「百万 tokens」为单位，根据模型输入和输出的总 token 数进行计量计费。采用峰谷定价：高峰时段为北京时间周一至周五 9:00-12:00、14:00-18:00，空闲时段价格为高峰时段的一半。2026-08-17 00:00（北京时间）之前的请求按旧价计费（flash 0.02/1/2，pro 0.025/3/6）。发送给 deepseek-v4-flash-vision-exp 的图片按其尺寸换算成 token，与文本 token 一并计费。',
   billingRule: '官方扣费规则：扣减费用 = token 消耗量 × 模型单价，费用直接从充值余额或赠送余额中扣减；两者同时存在时优先扣减赠送余额。',
   pricingUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
   usageUrl: 'https://platform.deepseek.com/usage',
@@ -52,10 +59,11 @@ const OFFICIAL_NOTES = {
 
 const round6 = (n) => Math.round(n * 1e6) / 1e6
 
-/** 判断时间戳所属计费时段: peak(高峰) | offpeak(空闲)。
+/** 判断时间戳所属计费时段: legacy(8-17 前旧价) | peak(高峰) | offpeak(空闲)。
  *  高峰 = 北京时间 周一至周五 9:00-12:00 / 14:00-18:00, 其余(含周末)为半价。 */
 const tierOf = (timestamp) => {
   const t = Number.isFinite(timestamp) ? timestamp : Date.now()
+  if (t < PRICING_CUTOFF_MS) return 'legacy'
   const bjt = new Date(t + 8 * 3600e3) // 北京时间壁钟(无夏令时, 固定 UTC+8)
   const dow = bjt.getUTCDay()          // 0=周日 … 6=周六(北京)
   const hour = bjt.getUTCHours()
@@ -227,7 +235,7 @@ const comparePricing = (current) => {
 
 /** 构造会话消耗投影单元。 */
 const makeConsumptionProjection = (getConfig) => {
-  const emptyTiers = () => ({ peak: zeroBuckets(), offpeak: zeroBuckets() })
+  const emptyTiers = () => ({ legacy: zeroBuckets(), peak: zeroBuckets(), offpeak: zeroBuckets() })
 
   return {
     key: 'balanceConsumption',
@@ -245,7 +253,7 @@ const makeConsumptionProjection = (getConfig) => {
       breakdown: z.array(z.object({
         model: z.string(),
         tiers: z.array(z.object({
-          tier: z.enum(['offpeak', 'peak']),
+          tier: z.enum(['legacy', 'offpeak', 'peak']),
           buckets: z.object({
             uncachedInput: z.number().int().nonnegative(),
             cacheRead: z.number().int().nonnegative(),
@@ -435,7 +443,7 @@ const makeConsumptionProjection = (getConfig) => {
         const tiersState = state.byModel[model]?.tiers ?? emptyTiers()
         const tierEntries = []
         let modelCost = 0
-        for (const tier of ['offpeak', 'peak']) {
+        for (const tier of ['legacy', 'offpeak', 'peak']) {
           const b = tiersState[tier] ?? zeroBuckets()
           if (bucketsEmpty(b)) continue
           const prices = {
@@ -479,7 +487,7 @@ const makeConsumptionProjection = (getConfig) => {
         topSteps,
       }
     },
-    stateVersion: 8,
+    stateVersion: 9,
   }
 }
 
@@ -646,20 +654,27 @@ export function apply(ctx, config) {
     refreshIntervalMs: runtimeConfig.refreshIntervalMs,
   })
 
-  /** 官方定价 payload(供前端展示与对账)。 */
-  const serializePricing = () => ({
-    source: OFFICIAL_NOTES.pricingUrl,
-    usageUrl: OFFICIAL_NOTES.usageUrl,
-    balanceApiUrl: OFFICIAL_NOTES.balanceApiUrl,
-    snapshotDate: OFFICIAL_NOTES.snapshotDate,
-    note: runtimeConfig.pricingNote,
-    billingRule: runtimeConfig.billingRule,
-    models: {
-      'deepseek-v4-flash': OFFICIAL_PRICES['deepseek-v4-flash'],
-      'deepseek-v4-pro': OFFICIAL_PRICES['deepseek-v4-pro'],
-      'deepseek-v4-flash-vision-exp': OFFICIAL_PRICES['deepseek-v4-flash-vision-exp'],
-    },
-  })
+  /** 官方定价 payload(供前端展示与对账; 展示表与官方页一致, 不含 legacy 旧价)。
+   *  注: legacy 旧价仍用于 2026-08-17 前历史请求的分段计费, 见 OFFICIAL_PRICES。 */
+  const serializePricing = () => {
+    const stripLegacy = (m) => ({
+      offpeak: OFFICIAL_PRICES[m].offpeak,
+      peak: OFFICIAL_PRICES[m].peak,
+    })
+    return {
+      source: OFFICIAL_NOTES.pricingUrl,
+      usageUrl: OFFICIAL_NOTES.usageUrl,
+      balanceApiUrl: OFFICIAL_NOTES.balanceApiUrl,
+      snapshotDate: OFFICIAL_NOTES.snapshotDate,
+      note: runtimeConfig.pricingNote,
+      billingRule: runtimeConfig.billingRule,
+      models: {
+        'deepseek-v4-flash': stripLegacy('deepseek-v4-flash'),
+        'deepseek-v4-pro': stripLegacy('deepseek-v4-pro'),
+        'deepseek-v4-flash-vision-exp': stripLegacy('deepseek-v4-flash-vision-exp'),
+      },
+    }
+  }
 
   /** 汇总一个会话投影为行; 失败/无数据返回 null。 */
   const foldSession = (session, projections) => {
@@ -975,7 +990,7 @@ export function apply(ctx, config) {
           group.tiers.push({ tier: entry.tier, buckets: entry.buckets, prices: entry.prices, cost: entry.cost })
           group.cost = round6(group.cost + entry.cost)
         }
-        const tierOrder = { offpeak: 0, peak: 1 }
+        const tierOrder = { legacy: 0, offpeak: 1, peak: 2 }
         for (const group of breakdown) group.tiers.sort((a, b) => tierOrder[a.tier] - tierOrder[b.tier])
         sessions.sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0))
         if (req.method === 'HEAD') {

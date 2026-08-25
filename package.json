@@ -1,6 +1,6 @@
 {
   "name": "dsh-balance-stats",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "DSH 设置页插件：DeepSeek 账户余额与本机会话 token 消耗统计面板",
   "type": "module",
   "main": "src/index.js",
