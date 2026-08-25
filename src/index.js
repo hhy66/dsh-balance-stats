@@ -8,8 +8,8 @@
  *    接口出处: https://api-docs.deepseek.com/api/get-user-balance
  * 2. 会话消耗投影: 注册 sessionProjections 单元 `balanceConsumption`,
  *    按【事件发生时刻】的官方峰谷时段逐条计价:
- *      - 2026-08-17 00:00 (北京时间) 前: 旧价 (flash 0.02/1/2, pro 0.025/3/6)
- *      - 之后: 高峰时段(9:00-12:00 / 14:00-18:00)全价, 其余空闲时段半价
+ *      - 高峰时段: 北京时间 周一至周五 9:00-12:00 / 14:00-18:00 全价
+ *      - 空闲时段: 其余时间(含周末全天)半价
  *      计费口径与官方一致: 未命中输入(含缓存写入) × 未命中价 + 缓存命中 × 命中价 + 输出 × 输出价
  *    出处: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
  * 3. 统计路由 `/balance-stats/stats`: 汇总本机全部会话的分层明细与预估花费,
@@ -21,26 +21,26 @@ export const name = 'dsh-balance-stats'
 
 const DEFAULT_PRICES = { cacheHit: 0.1, cacheMiss: 1, output: 2 }
 
-/** 官方峰谷定价生效时刻: 2026-08-17T00:00:00+08:00 */
-const PRICING_CUTOFF_MS = 1786896000000
-
-/** 官方定价表(元 / 每百万 token)。出处: https://api-docs.deepseek.com/zh-cn/quick_start/pricing */
+/** 官方定价表(元 / 每百万 token, 空闲时段 = 高峰时段半价)。
+ *  出处: https://api-docs.deepseek.com/zh-cn/quick_start/pricing */
 const OFFICIAL_PRICES = {
   'deepseek-v4-flash': {
-    legacy: { cacheHit: 0.02, cacheMiss: 1, output: 2 },
     offpeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
     peak: { cacheHit: 0.10, cacheMiss: 3.0, output: 9.0 },
   },
   'deepseek-v4-pro': {
-    legacy: { cacheHit: 0.025, cacheMiss: 3, output: 6 },
     offpeak: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
     peak: { cacheHit: 0.30, cacheMiss: 9.0, output: 27.0 },
+  },
+  'deepseek-v4-flash-vision-exp': {
+    offpeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
+    peak: { cacheHit: 0.10, cacheMiss: 3.0, output: 9.0 },
   },
 }
 
 /** 官方说明文案(可经配置覆盖)。 */
 const OFFICIAL_NOTES = {
-  pricingNote: '官方说明：下表所列模型价格以「百万 tokens」为单位，根据模型输入和输出的总 token 数进行计量计费。新价格于北京时间 2026 年 8 月 17 日 00:00 起生效，采用峰谷定价：高峰时段为北京时间 9:00-12:00、14:00-18:00，空闲时段价格为高峰时段的一半。',
+  pricingNote: '官方说明：下表所列模型价格以「百万 tokens」为单位，根据模型输入和输出的总 token 数进行计量计费。采用峰谷定价：高峰时段为北京时间周一至周五 9:00-12:00、14:00-18:00，空闲时段价格为高峰时段的一半。发送给 deepseek-v4-flash-vision-exp 的图片按其尺寸换算成 token，与文本 token 一并计费。',
   billingRule: '官方扣费规则：扣减费用 = token 消耗量 × 模型单价，费用直接从充值余额或赠送余额中扣减；两者同时存在时优先扣减赠送余额。',
   pricingUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
   usageUrl: 'https://platform.deepseek.com/usage',
@@ -49,12 +49,15 @@ const OFFICIAL_NOTES = {
 
 const round6 = (n) => Math.round(n * 1e6) / 1e6
 
-/** 判断时间戳所属计费时段: legacy | peak | offpeak */
+/** 判断时间戳所属计费时段: peak(高峰) | offpeak(空闲)。
+ *  高峰 = 北京时间 周一至周五 9:00-12:00 / 14:00-18:00, 其余(含周末)为半价。 */
 const tierOf = (timestamp) => {
-  if (!Number.isFinite(timestamp) || timestamp < PRICING_CUTOFF_MS) return 'legacy'
-  const d = new Date(timestamp)
-  const hourBJT = (d.getUTCHours() + 8) % 24
-  const isPeak = (hourBJT >= 9 && hourBJT < 12) || (hourBJT >= 14 && hourBJT < 18)
+  const t = Number.isFinite(timestamp) ? timestamp : Date.now()
+  const bjt = new Date(t + 8 * 3600e3) // 北京时间壁钟(无夏令时, 固定 UTC+8)
+  const dow = bjt.getUTCDay()          // 0=周日 … 6=周六(北京)
+  const hour = bjt.getUTCHours()
+  const isWeekday = dow >= 1 && dow <= 5 // 周一至周五
+  const isPeak = isWeekday && ((hour >= 9 && hour < 12) || (hour >= 14 && hour < 18))
   return isPeak ? 'peak' : 'offpeak'
 }
 
@@ -125,7 +128,7 @@ const dayKeyOf = (timestamp) => {
 
 /** 构造会话消耗投影单元。 */
 const makeConsumptionProjection = (getConfig) => {
-  const emptyTiers = () => ({ legacy: zeroBuckets(), peak: zeroBuckets(), offpeak: zeroBuckets() })
+  const emptyTiers = () => ({ peak: zeroBuckets(), offpeak: zeroBuckets() })
 
   return {
     key: 'balanceConsumption',
@@ -143,7 +146,7 @@ const makeConsumptionProjection = (getConfig) => {
       breakdown: z.array(z.object({
         model: z.string(),
         tiers: z.array(z.object({
-          tier: z.enum(['legacy', 'peak', 'offpeak']),
+          tier: z.enum(['offpeak', 'peak']),
           buckets: z.object({
             uncachedInput: z.number().int().nonnegative(),
             cacheRead: z.number().int().nonnegative(),
@@ -297,7 +300,7 @@ const makeConsumptionProjection = (getConfig) => {
         const tiersState = state.byModel[model]?.tiers ?? emptyTiers()
         const tierEntries = []
         let modelCost = 0
-        for (const tier of ['legacy', 'peak', 'offpeak']) {
+        for (const tier of ['offpeak', 'peak']) {
           const b = tiersState[tier] ?? zeroBuckets()
           if (bucketsEmpty(b)) continue
           const prices = {
@@ -338,7 +341,7 @@ const makeConsumptionProjection = (getConfig) => {
         days,
       }
     },
-    stateVersion: 6,
+    stateVersion: 7,
   }
 }
 
@@ -506,7 +509,6 @@ export function apply(ctx, config) {
 
   /** 官方定价 payload(供前端展示与对账)。 */
   const serializePricing = () => ({
-    effectiveAt: PRICING_CUTOFF_MS,
     source: OFFICIAL_NOTES.pricingUrl,
     usageUrl: OFFICIAL_NOTES.usageUrl,
     balanceApiUrl: OFFICIAL_NOTES.balanceApiUrl,
@@ -515,6 +517,7 @@ export function apply(ctx, config) {
     models: {
       'deepseek-v4-flash': OFFICIAL_PRICES['deepseek-v4-flash'],
       'deepseek-v4-pro': OFFICIAL_PRICES['deepseek-v4-pro'],
+      'deepseek-v4-flash-vision-exp': OFFICIAL_PRICES['deepseek-v4-flash-vision-exp'],
     },
   })
 
@@ -826,7 +829,7 @@ export function apply(ctx, config) {
           group.tiers.push({ tier: entry.tier, buckets: entry.buckets, prices: entry.prices, cost: entry.cost })
           group.cost = round6(group.cost + entry.cost)
         }
-        const tierOrder = { legacy: 0, offpeak: 1, peak: 2 }
+        const tierOrder = { offpeak: 0, peak: 1 }
         for (const group of breakdown) group.tiers.sort((a, b) => tierOrder[a.tier] - tierOrder[b.tier])
         sessions.sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0))
         if (req.method === 'HEAD') {

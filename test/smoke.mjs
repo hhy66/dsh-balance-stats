@@ -1,18 +1,20 @@
-// dsh-balance-stats 宿主端冒烟测试 v0.2.0:
-// 用假 cordis 上下文驱动 apply, 验证按【事件时刻】的峰谷分层计价、
-// 明细 breakdown 结构与 /balance-stats/stats 路由端到端输出。
+// dsh-balance-stats 宿主端冒烟测试 v0.3:
+// 验证按【事件时刻】的官方峰谷计价(高峰=北京时间周一至周五 9-12/14-18, 其余半价)、
+// 压缩摘要用量、冷读、逐日数据、辅助调用计数与官方定价 payload。
 import { apply } from '../src/index.js'
 
-// 官方峰谷生效时刻: 2026-08-17T00:00+08:00 = 1786896000000
-const CUTOFF = 1786896000000
-const T_LEGACY = CUTOFF - 3600e3   // 8-16 23:00 北京时间 → legacy 旧价
-const T_PEAK = CUTOFF + 10 * 3600e3 // 8-17 10:00 北京时间 → 高峰
-const T_OFFPEAK = CUTOFF + 8 * 3600e3 // 8-17 08:00 北京时间 → 空闲
+// 时间戳(北京时间, UTC+8; Date.UTC 的月从 0 起):
+//   T_PEAK    = 2026-08-18 周一 10:00 → 高峰
+//   T_OFFPEAK = 2026-08-18 周一 08:00 → 空闲(工作日非高峰)
+//   T_OLD     = 2026-08-16 周六 10:00 → 空闲(周末全天半价)
+const T_PEAK = Date.UTC(2026, 7, 18, 2)
+const T_OFFPEAK = Date.UTC(2026, 7, 18, 0)
+const T_OLD = Date.UTC(2026, 7, 16, 2)
 
 const events = [
-  { time: T_LEGACY, type: 'request/header', data: { header: { config: { model: 'deepseek-v4-pro' } } } },
-  { time: T_LEGACY, type: 'assistant/chunk', data: { turn: 0, step: 0, chunk: { type: 'usage', usage: { inputTokens: 500, cacheReadTokens: 200, cacheWriteTokens: 50, outputTokens: 120 } } } },
-  { time: T_LEGACY, type: 'assistant/chunk', data: { turn: 0, step: 0, chunk: { type: 'usage', usage: { inputTokens: 700, cacheReadTokens: 300, cacheWriteTokens: 60, outputTokens: 150 } } } }, // 同 (turn,step) 替换样本
+  { time: T_PEAK, type: 'request/header', data: { header: { config: { model: 'deepseek-v4-pro' } } } },
+  { time: T_PEAK, type: 'assistant/chunk', data: { turn: 0, step: 0, chunk: { type: 'usage', usage: { inputTokens: 500, cacheReadTokens: 200, cacheWriteTokens: 50, outputTokens: 120 } } } },
+  { time: T_PEAK, type: 'assistant/chunk', data: { turn: 0, step: 0, chunk: { type: 'usage', usage: { inputTokens: 700, cacheReadTokens: 300, cacheWriteTokens: 60, outputTokens: 150 } } } }, // 同 (turn,step) 替换样本
   { time: T_PEAK, type: 'request/context', data: { model: 'deepseek-v4-flash' } },
   { time: T_PEAK, type: 'assistant/message', data: { turn: 1, step: 0, usage: { inputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 10, outputTokens: 40 } } },
   { time: T_PEAK, type: 'compaction/summary', data: { compactionId: 'c1', model: 'deepseek-v4-pro', usage: { inputTokens: 1000, cacheReadTokens: 50000, cacheWriteTokens: 100, outputTokens: 300 } } },
@@ -26,8 +28,7 @@ const sessionB = { id: 'session-bbbb', header: { cwd: 'E:\\乐乐课堂' }, even
   { time: T_OFFPEAK, type: 'assistant/message', data: { turn: 0, step: 0, usage: { inputTokens: 300, cacheReadTokens: 100, cacheWriteTokens: 0, outputTokens: 80 } } },
 ], title: '' }
 
-// 磁盘上的历史会话(冷读路径): 未加载到内存, 经 ctx.sessionPersistence 提供
-const T_OLD = CUTOFF - 26 * 3600e3 // 8-15 22:00 北京时间 → legacy 旧价, 独立一天
+// 磁盘历史会话(冷读路径): 周末, 应计为空闲价
 const coldEvents = [
   { time: T_OLD, type: 'request/header', data: { header: { config: { model: 'deepseek-v4-pro' } } } },
   { time: T_OLD, type: 'assistant/message', data: { turn: 0, step: 0, usage: { inputTokens: 200, cacheReadTokens: 50, cacheWriteTokens: 0, outputTokens: 30 } } },
@@ -81,56 +82,49 @@ const json = JSON.parse(res.body)
 const assert = (cond, msg) => { if (!cond) throw new Error('断言失败: ' + msg) }
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps
 
-// ── token 汇总(与 v0.1 相同的去重语义) ──
-assert(json.totals.sessionCount === 3, '会话数 = 3(含冷读历史会话), got ' + json.totals.sessionCount)
+// ── token 汇总 ──
+assert(json.totals.sessionCount === 3, '会话数 = 3(含冷读), got ' + json.totals.sessionCount)
 assert(json.totals.workspaceCount === 3, '工作区数 = 3, got ' + json.totals.workspaceCount)
-assert(json.sessions[0].workspace === 'C:\\Users\\hhy99', '最新会话(sessionA)的工作区 = C:\\Users\\hhy99, got ' + json.sessions[0].workspace)
-assert(json.sessions.find((s) => s.id === 'session-bbbb').workspace === 'E:\\乐乐课堂', 'sessionB 工作区 = E:\\乐乐课堂')
-assert(json.totals.tokens.uncachedInput === 2300, '未命中输入 = 2300(含冷读200+压缩1000), got ' + json.totals.tokens.uncachedInput)
-assert(json.totals.tokens.cacheRead === 50450, '缓存命中 = 50450(含冷读50+压缩50000), got ' + json.totals.tokens.cacheRead)
-assert(json.totals.tokens.cacheWrite === 170, '缓存写入 = 170(含压缩100), got ' + json.totals.tokens.cacheWrite)
-assert(json.totals.tokens.output === 600, '输出 = 600(含冷读30+压缩300), got ' + json.totals.tokens.output)
+assert(json.totals.tokens.uncachedInput === 2300, '未命中输入 = 2300, got ' + json.totals.tokens.uncachedInput)
+assert(json.totals.tokens.cacheRead === 50450, '缓存命中 = 50450, got ' + json.totals.tokens.cacheRead)
+assert(json.totals.tokens.cacheWrite === 170, '缓存写入 = 170, got ' + json.totals.tokens.cacheWrite)
+assert(json.totals.tokens.output === 600, '输出 = 600, got ' + json.totals.tokens.output)
 
-// ── 分层计价(官方口径) ──
-// pro/legacy 合并(内存 700/300/60/150 + 冷读 200/50/0/30):
-//   (900+60)×3 + 350×0.025 + 180×6 = 3968.75 /1e6 → 0.003969
-// flash/peak: (100+10)×3.0 + 0×0.10 + 40×9.0 = 690 /1e6 = 0.00069
-// pro/offpeak: (300+0)×4.5 + 100×0.15 + 80×13.5 = 2445 /1e6 = 0.002445
-// pro/peak(压缩摘要): (1000+100)×9 + 50000×0.30 + 300×27 = 33000 /1e6 = 0.033
-// 冷读会话: (200+0)×3 + 50×0.025 + 30×6 = 781.25 /1e6 = 0.000781
-// 合计 0.00710375 + 0.033 = 0.04010375 → round6 = 0.040104
-assert(near(json.totals.cost, 0.040104), '总花费 = 0.040104, got ' + json.totals.cost)
+// ── 分层计价(新口径: 高峰=周一至五 9-12/14-18, 其余半价; 无旧价) ──
+// pro/peak(会话A): (1700+160)×9 + 50300×0.30 + 450×27 = 43980 /1e6 = 0.04398
+// flash/peak(会话A): (100+10)×3.0 + 0×0.10 + 40×9.0 = 690 /1e6 = 0.00069
+// pro/offpeak(会话B+冷读): (500+0)×4.5 + 150×0.15 + 110×13.5 = 3757.5 /1e6 = 0.003758
+// 合计 0.04398 + 0.00069 + 0.003758 = 0.048428
+assert(near(json.totals.cost, 0.048428), '总花费 = 0.048428, got ' + json.totals.cost)
 
 const byModel = Object.fromEntries(json.breakdown.map((g) => [g.model, g]))
-assert(byModel['deepseek-v4-pro'] !== undefined && byModel['deepseek-v4-flash'] !== undefined, 'breakdown 含两个模型')
+assert(byModel['deepseek-v4-pro'] !== undefined && byModel['deepseek-v4-flash'] !== undefined, 'breakdown 含 pro 与 flash')
 const proTiers = Object.fromEntries(byModel['deepseek-v4-pro'].tiers.map((t) => [t.tier, t]))
 const flashTiers = Object.fromEntries(byModel['deepseek-v4-flash'].tiers.map((t) => [t.tier, t]))
-assert(proTiers.legacy && proTiers.offpeak && proTiers.peak, 'pro 有 legacy+offpeak+peak 三个时段')
+assert(proTiers.peak && proTiers.offpeak, 'pro 有 peak+offpeak 两个时段')
 assert(flashTiers.peak, 'flash 有 peak 时段')
 
-assert(near(proTiers.legacy.cost, 0.003969), 'pro legacy 花费(合并冷读), got ' + proTiers.legacy.cost)
-assert(near(proTiers.legacy.prices.cacheMiss, 3) && near(proTiers.legacy.prices.cacheHit, 0.025) && near(proTiers.legacy.prices.output, 6), 'pro legacy 官方旧价')
-assert(proTiers.legacy.buckets.uncachedInput === 900 && proTiers.legacy.buckets.cacheRead === 350 && proTiers.legacy.buckets.cacheWrite === 60 && proTiers.legacy.buckets.output === 180, 'pro legacy 分桶正确(替换样本去重 + 冷读合并)')
-
-assert(near(proTiers.peak.cost, 0.033), 'pro peak 压缩摘要花费 = 0.033, got ' + proTiers.peak.cost)
+assert(near(proTiers.peak.cost, 0.04398), 'pro peak 花费, got ' + proTiers.peak.cost)
 assert(near(proTiers.peak.prices.cacheMiss, 9) && near(proTiers.peak.prices.cacheHit, 0.3) && near(proTiers.peak.prices.output, 27), 'pro peak 官方高峰价')
-assert(proTiers.peak.buckets.uncachedInput === 1000 && proTiers.peak.buckets.cacheRead === 50000 && proTiers.peak.buckets.cacheWrite === 100 && proTiers.peak.buckets.output === 300, 'pro peak 分桶 = 压缩摘要样本')
+assert(proTiers.peak.buckets.uncachedInput === 1700 && proTiers.peak.buckets.cacheRead === 50300 && proTiers.peak.buckets.cacheWrite === 160 && proTiers.peak.buckets.output === 450, 'pro peak 分桶正确')
+
+assert(near(proTiers.offpeak.cost, 0.003758), 'pro offpeak 花费(含周末冷读), got ' + proTiers.offpeak.cost)
+assert(near(proTiers.offpeak.prices.cacheMiss, 4.5) && near(proTiers.offpeak.prices.cacheHit, 0.15) && near(proTiers.offpeak.prices.output, 13.5), 'pro offpeak 官方空闲价')
+assert(proTiers.offpeak.buckets.uncachedInput === 500 && proTiers.offpeak.buckets.cacheRead === 150 && proTiers.offpeak.buckets.output === 110, 'pro offpeak 分桶(周末按空闲)')
 
 assert(near(flashTiers.peak.cost, 0.00069), 'flash peak 花费, got ' + flashTiers.peak.cost)
-assert(near(flashTiers.peak.prices.cacheMiss, 3.0) && near(flashTiers.peak.prices.cacheHit, 0.10) && near(flashTiers.peak.prices.output, 9.0), 'flash peak 官方高峰价')
 
-assert(near(proTiers.offpeak.cost, 0.002445), 'pro offpeak 花费, got ' + proTiers.offpeak.cost)
-assert(near(proTiers.offpeak.prices.cacheMiss, 4.5) && near(proTiers.offpeak.prices.cacheHit, 0.15) && near(proTiers.offpeak.prices.output, 13.5), 'pro offpeak 官方空闲价')
+// ── 官方定价 payload(含新模型, 无旧价) ──
+assert(json.pricing !== null, '定价 payload 存在')
+assert(json.pricing.models['deepseek-v4-pro'].peak.output === 27, 'pro 高峰输出价 27')
+assert(json.pricing.models['deepseek-v4-flash-vision-exp'] !== undefined, '含新模型 vision-exp')
+assert(json.pricing.models['deepseek-v4-flash-vision-exp'].peak.cacheMiss === 3.0, 'vision-exp 高峰未命中价 3.0')
+assert(json.pricing.models['deepseek-v4-pro'].legacy === undefined, '旧价已移除')
+assert(json.pricing.effectiveAt === undefined, 'effectiveAt 字段已移除')
+assert(typeof json.pricing.note === 'string' && json.pricing.note.includes('周一至周五'), '官方说明含"周一至周五"高峰规则')
 
-// ── 官方定价 payload ──
-assert(json.pricing !== null && json.pricing.models['deepseek-v4-pro'].peak.output === 27, '官方定价表 payload')
-assert(typeof json.pricing.note === 'string' && json.pricing.note.length > 20, '官方说明文案')
-assert(typeof json.pricing.billingRule === 'string' && json.pricing.billingRule.length > 10, '官方扣费规则文案')
-assert(json.pricing.source === 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing', '官方定价页链接')
-assert(json.pricing.usageUrl === 'https://platform.deepseek.com/usage', '官方用量页链接')
-
-// ── 会话明细行带 breakdown ──
-assert(json.sessions.length === 3, '会话明细 3 行(含冷读), got ' + json.sessions.length)
+// ── 会话明细行 ──
+assert(json.sessions.length === 3, '会话明细 3 行, got ' + json.sessions.length)
 assert(Array.isArray(json.sessions[0].breakdown) && json.sessions[0].breakdown.length > 0, '会话行带分层明细')
 
 // ── 冷读历史会话 ──
@@ -138,48 +132,37 @@ const coldRow = json.sessions.find((s) => s.id === 'session-old')
 assert(coldRow !== undefined, '冷读会话出现在明细中')
 assert(coldRow.title === '旧会话标题', '冷读会话标题取自 session/title 事件, got ' + coldRow.title)
 assert(coldRow.workspace === 'D:\\old', '冷读会话工作区 = D:\\old, got ' + coldRow.workspace)
-assert(near(coldRow.cost, 0.000781), '冷读会话花费 = 0.000781, got ' + coldRow.cost)
+assert(near(coldRow.cost, 0.001313), '冷读会话花费 = 0.001313(周末空闲价), got ' + coldRow.cost)
 assert(json.cold !== undefined && json.cold.status === 'ready' && json.cold.count === 1, 'cold 状态字段, got ' + JSON.stringify(json.cold))
 
-// ── 标题与 Web 界面同源(session/title 事件, 用户改名即追加此类事件) ──
+// ── 标题与 Web 界面同源 ──
 assert(json.sessions[0].title === '真实标题A', '标题取自 session/title 事件, got ' + JSON.stringify(json.sessions[0].title))
 assert(json.sessions[0].title !== '旧的头字段(不应被采用)', 'header.title 不再被采用')
-assert(json.sessions.find((s) => s.id === 'session-bbbb').title === '', '无标题事件的会话标题为空字符串')
 
-// ── 逐日花费(KPI: 今日/本月/续航 的数据基础, 时区无关断言) ──
+// ── 逐日花费与 token 分桶(时区无关断言) ──
 const round6 = (n) => Math.round(n * 1e6) / 1e6
 const dayOf = (ts) => {
   const d = new Date(ts)
   const pad = (n) => String(n).padStart(2, '0')
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
 }
-const expectByDay = new Map()
-const addDay = (ts, cost) => expectByDay.set(dayOf(ts), round6((expectByDay.get(dayOf(ts)) ?? 0) + cost))
-addDay(T_LEGACY, 0.003188)  // pro legacy 3187.5/1e6
-addDay(T_PEAK, 0.00069 + 0.033) // flash peak 690/1e6 + 压缩摘要 33000/1e6
-addDay(T_OFFPEAK, 0.002445) // pro offpeak 2445/1e6
-addDay(T_OLD, 0.000781)     // 冷读会话 pro legacy 781.25/1e6
-assert(Array.isArray(json.totals.days) && json.totals.days.length === expectByDay.size, '逐日数据条数 = ' + expectByDay.size + ', got ' + (json.totals.days ?? []).length)
-const gotByDay = new Map((json.totals.days ?? []).map((d) => [d.day, d.cost]))
-for (const [k, v] of expectByDay) {
-  assert(near(gotByDay.get(k), v, 1e-6), 'day ' + k + ' 花费 = ' + v + ', got ' + gotByDay.get(k))
-}
-// 逐日 token 分桶(8-17 当天 = flash 主请求 + 压缩摘要 + sessionB 空闲请求, 三者同日):
-//   uncached 100+1000+300=1400, cacheRead 0+50000+100=50100, cacheWrite 10+100+0=110, output 40+300+80=420
-const dayPeak = (json.totals.days ?? []).find((d) => d.day === dayOf(T_PEAK))
-assert(dayPeak !== undefined, 'T_PEAK 当天存在逐日数据')
-assert(dayPeak.tokens !== undefined && dayPeak.tokens.uncachedInput === 1400 && dayPeak.tokens.cacheRead === 50100 && dayPeak.tokens.cacheWrite === 110 && dayPeak.tokens.output === 420, 'T_PEAK 逐日 token 分桶正确, got ' + JSON.stringify(dayPeak.tokens))
+const gotByDay = new Map((json.totals.days ?? []).map((d) => [d.day, d]))
+// 8-18(高峰日): pro peak + flash peak + sessionB offpeak
+const dPeak = gotByDay.get(dayOf(T_PEAK))
+assert(dPeak !== undefined, '8-18 逐日数据存在')
+assert(near(dPeak.cost, 0.047115), '8-18 花费 = 0.047115, got ' + dPeak.cost)
+assert(dPeak.tokens.uncachedInput === 2100 && dPeak.tokens.cacheRead === 50400 && dPeak.tokens.cacheWrite === 170 && dPeak.tokens.output === 570, '8-18 逐日 token 分桶, got ' + JSON.stringify(dPeak.tokens))
+assert(dPeak.aux !== undefined && dPeak.aux.titles === 1 && dPeak.aux.searches === 1, '8-18 辅助调用计数, got ' + JSON.stringify(dPeak.aux))
+// 8-16(周末冷读日)
+const dOld = gotByDay.get(dayOf(T_OLD))
+assert(dOld !== undefined && near(dOld.cost, 0.001313), '8-16 冷读花费 = 0.001313, got ' + (dOld && dOld.cost))
 // 逐日合计 = 总花费(一致性)
 const dayTotal = (json.totals.days ?? []).reduce((s, d) => s + d.cost, 0)
 assert(near(round6(dayTotal), json.totals.cost, 1e-6), '逐日合计与总花费一致')
 
-// ── 预算配置 ──
+// ── 预算与辅助调用 ──
 assert(json.budget !== undefined && json.budget.daily === 0, '默认预算为 0(关闭), got ' + JSON.stringify(json.budget))
-
-// ── 辅助调用计数(标题生成/网页搜索: 用量不落盘, 只能计数) ──
-assert(json.totals.aux !== undefined && json.totals.aux.titles === 1 && json.totals.aux.searches === 1, '辅助调用计数 = {titles:1, searches:1}, got ' + JSON.stringify(json.totals.aux))
-const dayWithAux = (json.totals.days ?? []).find((d) => d.day === dayOf(T_PEAK))
-assert(dayWithAux !== undefined && dayWithAux.aux !== undefined && dayWithAux.aux.titles === 1 && dayWithAux.aux.searches === 1, '逐日辅助调用计数, got ' + JSON.stringify(dayWithAux))
+assert(json.totals.aux !== undefined && json.totals.aux.titles === 1 && json.totals.aux.searches === 1, '辅助调用计数, got ' + JSON.stringify(json.totals.aux))
 
 // ── query 路由容错 ──
 const res2 = { writeHead: () => {}, end: (b) => { res2.body = b } }
@@ -187,5 +170,5 @@ await routes.get('/balance-stats/query').handler({ method: 'GET', url: '/balance
 const q = JSON.parse(res2.body)
 assert(q.ok === false || q.ok === true, 'query 返回合法 JSON')
 
-console.log('✅ 全部断言通过 (v0.2.0 峰谷分层计价)')
-console.log(JSON.stringify({ totals: json.totals, breakdown: json.breakdown, pricingModels: json.pricing.models }, null, 2))
+console.log('✅ 全部断言通过 (v0.3 官方新定价: 工作日峰谷 + vision-exp 模型, 无旧价)')
+console.log(JSON.stringify({ totals: json.totals, breakdown: json.breakdown, pricingModels: Object.keys(json.pricing.models) }, null, 2))

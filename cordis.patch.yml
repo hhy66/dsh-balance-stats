@@ -26,7 +26,6 @@
         # 官方定价与扣费规则文案(留空则用插件内置的官方原文, 可自行覆盖)
         pricingNote: ''
         billingRule: ''
-        prices:
-          deepseek-v4-flash: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 }
-          deepseek-v4-pro: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 }
+        # 非 V4 模型的静态单价(每百万 token); V4 系列单价内置自官方定价页, 无需在此配置
+        prices: {}
         defaultPrices: { cacheHit: 0.1, cacheMiss: 1, output: 2 }

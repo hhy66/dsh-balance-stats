@@ -116,7 +116,7 @@ window.__ModuleLoader__.load({
 			return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
 		};
 		const shortId = (id) => (typeof id === "string" && id.length > 8 ? id.slice(0, 8) : id ?? "—");
-		const TIER_LABEL = { legacy: "旧价格(8-17前)", offpeak: "空闲时段", peak: "高峰时段" };
+		const TIER_LABEL = { offpeak: "空闲时段", peak: "高峰时段" };
 
 		/** 本地日历日 key: YYYY-MM-DD(与宿主端一致, 用于逐日数据切片) */
 		const dayKeyOfTs = (ts) => {
@@ -163,13 +163,20 @@ window.__ModuleLoader__.load({
 			react.createElement("span", null, sign + " ¥" + fmtMoney(tokens * price / 1e6))
 		);
 
-		// ── 共享 KPI 数据仓库: 设置面板与侧边栏页脚共用同一份数据与轮询 ──
-		// 30 秒轮询 + 页面可见性恢复 + 会话推送流触发的防抖刷新。
+		// ── 共享 KPI 数据仓库: 设置面板与右上角胶囊共用同一份数据 ──
+		// 全量统计(/stats) 30 秒轮询; 余额(/query) 每 3 秒轻量刷新(胶囊余额秒级),
+		// 另加页面可见性恢复 + 会话推送流触发的防抖刷新。
 		const kpiStore = {
 			data: null,
 			error: null,
 			listeners: new Set(),
 			timer: null,
+			balanceTimer: null,
+			notify: () => {
+				for (const fn of kpiStore.listeners) {
+					try { fn() } catch { /* 监听器异常隔离 */ }
+				}
+			},
 			load: async () => {
 				try {
 					const res = await fetch("/balance-stats/stats", { cache: "no-store" });
@@ -179,16 +186,32 @@ window.__ModuleLoader__.load({
 				} catch (err) {
 					kpiStore.error = err instanceof Error ? err.message : String(err);
 				}
-				for (const fn of kpiStore.listeners) {
-					try { fn() } catch { /* 监听器异常隔离 */ }
+				kpiStore.notify();
+			},
+			loadBalance: async () => {
+				try {
+					const res = await fetch("/balance-stats/query", { cache: "no-store" });
+					if (!res.ok) return;
+					const balance = await res.json();
+					if (kpiStore.data !== null) {
+						kpiStore.data = { ...kpiStore.data, balance };
+						kpiStore.notify();
+					}
+				} catch {
+					/* 余额轮询失败保留旧值 */
 				}
 			},
 			ensureLoop: () => {
 				if (kpiStore.timer !== null) return;
 				kpiStore.load();
+				kpiStore.loadBalance();
 				kpiStore.timer = setInterval(() => { kpiStore.load() }, 30000);
+				kpiStore.balanceTimer = setInterval(() => { kpiStore.loadBalance() }, 3000);
 				const onVisible = () => {
-					if (!document.hidden) kpiStore.load();
+					if (!document.hidden) {
+						kpiStore.load();
+						kpiStore.loadBalance();
+					}
 				};
 				document.addEventListener("visibilitychange", onVisible);
 				kpiStore.offVisible = onVisible;
@@ -253,7 +276,7 @@ window.__ModuleLoader__.load({
 			}
 			return react.createElement("div", {
 				className: "dbs_corner" + (expanded ? "" : " dbs_corner_compact"),
-				title: "DeepSeek 余额与消耗 · 30 秒自动更新\n余额 " + kpi.money(kpi.totalBalance) + " · 续航 " + left + " · 今日 " + kpi.money(kpi.todayCost) + " · 本月 " + kpi.money(kpi.monthCost) + "\n点击展开/收起 · 完整面板见 设置 → 余额与消耗",
+				title: "DeepSeek 余额与消耗 · 余额每 3 秒刷新 · 统计每 30 秒刷新\n余额 " + kpi.money(kpi.totalBalance) + " · 续航 " + left + " · 今日 " + kpi.money(kpi.todayCost) + " · 本月 " + kpi.money(kpi.monthCost) + "\n点击展开/收起 · 完整面板见 设置 → 余额与消耗",
 				role: "button",
 				onClick: () => setExpanded((e) => !e)
 			}, children);
@@ -619,7 +642,6 @@ window.__ModuleLoader__.load({
 						),
 						react.createElement("tbody", null,
 							Object.entries(pricing.models ?? {}).flatMap(([model, table]) => [
-								["legacy", "旧价格", table.legacy],
 								["offpeak", "空闲时段", table.offpeak],
 								["peak", "高峰时段", table.peak]
 							].map(([tier, label, p]) => react.createElement("tr", { key: model + "|" + tier },
@@ -636,7 +658,7 @@ window.__ModuleLoader__.load({
 					react.createElement("div", { className: "dbs_hint" },
 						"来源: ",
 						react.createElement("a", { className: "dbs_link", href: pricing.source, target: "_blank", rel: "noreferrer" }, "官方定价页"),
-						" · 新价自 2026-08-17 00:00（北京时间）起生效"
+						" · 高峰 = 北京时间周一至周五 9:00-12:00 / 14:00-18:00，其余半价"
 					)
 				),
 				// ── 会话明细(按工作区/时间/关键词筛选)
