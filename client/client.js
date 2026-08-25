@@ -7,6 +7,9 @@
  *   - 消耗: 本机全部会话的 token 汇总与【计算步骤明细】——
  *     按事件发生时刻的官方峰谷时段, 逐条展示 未命中输入/缓存写入/缓存命中/输出 × 单价 = 花费。
  *   - 官方定价: 展示官方价格表、峰谷规则与扣费规则原文, 附官方页面链接供对账。
+ *
+ * KPI 盘头改挂 shell.overlay 槽位: 右上角悬浮胶囊 (原 sidebar.footer.action
+ * 与插件市场入口 cordis-panel 同槽互相遮挡, 故移出)。
  */
 window.__ModuleLoader__.load({
 	id: "dsh-balance-stats",
@@ -82,7 +85,13 @@ window.__ModuleLoader__.load({
 				".dbs_foot_sep{color:var(--dsw-alias-separator-primary,rgba(128,128,128,0.3));margin:0 1px;flex-shrink:0}",
 				".dbs_foot_lab{color:var(--dsw-alias-label-tertiary,#8b949e)}",
 				".dbs_foot_rail{justify-content:center;padding:5px 0}",
-				".dbs_foot .dbs_dot{width:10px;height:10px}"
+				".dbs_foot .dbs_dot{width:10px;height:10px}",
+				".dbs_corner{position:fixed;top:47px;right:28px;z-index:30;display:flex;align-items:center;gap:6px;font-size:12px;line-height:1;padding:6px 12px;border-radius:999px;background:rgba(128,128,128,0.08);background:color-mix(in srgb,var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.06)) 88%,transparent);border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,0.25));backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);color:var(--dsw-alias-label-secondary,#57606a);pointer-events:auto;white-space:nowrap;max-width:min(460px,60vw);overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;cursor:pointer;user-select:none}",
+				".dbs_corner_compact{padding:5px 10px}",
+				".dbs_corner .dbs_dot{width:9px;height:9px}",
+				".dbs_corner_val{color:var(--dsw-alias-label-primary,#1f2328);font-weight:600}",
+				".dbs_corner_sep{color:var(--dsw-alias-separator-primary,rgba(128,128,128,0.3));margin:0 1px;flex-shrink:0}",
+				".dbs_corner_lab{color:var(--dsw-alias-label-tertiary,#8b949e)}"
 			].join("");
 			document.head.appendChild(tag);
 		}
@@ -218,34 +227,36 @@ window.__ModuleLoader__.load({
 			return { balance, totalBalance, todayCost, monthCost, daysLeft, money };
 		};
 
-		/** 左侧边栏页脚 KPI 盘头(官方 sidebar.footer.action 插槽, 位于设置行上方)。 */
-		function KpiFooter({ wide }) {
+		/** 右上角悬浮 KPI 胶囊(官方 shell.overlay 槽位, 全窗口叠加层, 不占布局)。
+		 *  默认只显示余额(最小占地, 不挡右侧按钮), 点击展开 续航/今日/本月, 再点收起。 */
+		function KpiCorner() {
 			const data = useKpi();
 			const kpi = kpiOf(data);
 			const dotCls = balanceStatus(kpi.balance).cls;
 			const left = kpi.daysLeft === null ? "—" : (kpi.daysLeft >= 365 ? ">1年" : "≈" + (kpi.daysLeft < 1 ? kpi.daysLeft.toFixed(1) : String(Math.round(kpi.daysLeft))) + "天");
-			if (!wide) {
-				// 侧边栏收起(窄轨): 只显示状态灯
-				return react.createElement("div", {
-					className: "dbs_foot dbs_foot_rail",
-					title: "余额 " + kpi.money(kpi.totalBalance) + " · 续航 " + left + " · 今日 " + kpi.money(kpi.todayCost) + " · 本月 " + kpi.money(kpi.monthCost)
-				}, react.createElement("span", { className: "dbs_dot " + dotCls }));
+			const [expanded, setExpanded] = react.useState(false);
+			const children = [
+				react.createElement("span", { className: "dbs_dot " + dotCls }),
+				react.createElement("span", { className: "dbs_corner_val" }, kpi.money(kpi.totalBalance))
+			];
+			if (expanded) {
+				children.push(
+					react.createElement("span", { className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", null, left),
+					react.createElement("span", { className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", { className: "dbs_corner_lab" }, "今"),
+					react.createElement("span", { className: "dbs_corner_val" }, kpi.money(kpi.todayCost)),
+					react.createElement("span", { className: "dbs_corner_sep" }, "·"),
+					react.createElement("span", { className: "dbs_corner_lab" }, "月"),
+					react.createElement("span", { className: "dbs_corner_val" }, kpi.money(kpi.monthCost))
+				);
 			}
 			return react.createElement("div", {
-				className: "dbs_foot",
-				title: "DeepSeek 余额与消耗 · 30 秒自动更新"
-			},
-				react.createElement("span", { className: "dbs_dot " + dotCls }),
-				react.createElement("span", { className: "dbs_foot_val" }, kpi.money(kpi.totalBalance)),
-				react.createElement("span", { className: "dbs_foot_sep" }, "·"),
-				react.createElement("span", { className: "dbs_foot_val" }, left),
-				react.createElement("span", { className: "dbs_foot_sep" }, "·"),
-				react.createElement("span", { className: "dbs_foot_lab" }, "今"),
-				react.createElement("span", { className: "dbs_foot_val" }, kpi.money(kpi.todayCost)),
-				react.createElement("span", { className: "dbs_foot_sep" }, "·"),
-				react.createElement("span", { className: "dbs_foot_lab" }, "月"),
-				react.createElement("span", { className: "dbs_foot_val" }, kpi.money(kpi.monthCost))
-			);
+				className: "dbs_corner" + (expanded ? "" : " dbs_corner_compact"),
+				title: "DeepSeek 余额与消耗 · 30 秒自动更新\n余额 " + kpi.money(kpi.totalBalance) + " · 续航 " + left + " · 今日 " + kpi.money(kpi.todayCost) + " · 本月 " + kpi.money(kpi.monthCost) + "\n点击展开/收起 · 完整面板见 设置 → 余额与消耗",
+				role: "button",
+				onClick: () => setExpanded((e) => !e)
+			}, children);
 		}
 
 		function BalanceStatsSection({ sessionsFeed }) {
@@ -704,12 +715,13 @@ window.__ModuleLoader__.load({
 				label: () => "余额与消耗",
 				inject: () => ({ sessionsFeed: ctx.sessions })
 			}, BalanceStatsSection));
-			// 左侧边栏页脚 KPI 盘头(官方 sidebar.footer.action 插槽, 位于设置行上方)
-			ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
-				name: "sidebar.footer.action",
+			// 右上角悬浮 KPI 胶囊(官方 shell.overlay 槽位: 全窗口叠加层, 列表槽可叠加,
+			// 不与插件市场入口(sidebar.footer.action)冲突; 默认点击穿透, 胶囊自身接收鼠标)
+			ctx.slots.inject("shell.overlay", () => ctx.slots.register({
+				name: "shell.overlay",
 				id: "dsh-balance-stats-kpi",
 				order: 0
-			}, KpiFooter));
+			}, KpiCorner));
 		}
 
 		exports.apply = apply;
