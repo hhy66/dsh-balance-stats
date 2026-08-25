@@ -136,7 +136,7 @@ const upsertTop = (list, key, entry, max = 10) => {
   return next.slice(0, max)
 }
 
-/** 经 HTTP 代理(如 127.0.0.1:7897)通过 CONNECT 隧道 GET 一个 HTTPS 页面, 返回原始响应文本。
+/** 经 HTTP 代理(如本机 Clash 代理)通过 CONNECT 隧道 GET 一个 HTTPS 页面, 返回原始响应文本。
  *  用于"定价自检"在需要代理的网络上抓取官方定价页; 无需代理时走全局 fetch。 */
 const getHtmlViaProxy = (urlStr, proxyStr, timeoutMs) => new Promise((resolve, reject) => {
   const target = new URL(urlStr)
@@ -1031,7 +1031,7 @@ export function apply(ctx, config) {
             ok: false,
             error: 'fetch-failed',
             message: error instanceof Error ? error.message : String(error),
-            hint: '若本机需代理访问官方页, 请在配置里设置 pricingCheckProxy(如 http://127.0.0.1:7897)',
+            hint: '若本机需代理访问官方页, 请在配置里设置 pricingCheckProxy(如 http://本机代理地址:端口)',
           })
         }
       },
